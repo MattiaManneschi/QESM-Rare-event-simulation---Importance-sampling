@@ -10,18 +10,24 @@ import numpy as np
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Hardware rilevato: {device}")
 
-#TODO FARE ALTRI TEST
-#TODO DIVIDERE LA GENERAZIONE DEI RISULTATI IN BASE ALLA TIPOLOGIA DI ALBERO
-
 def fault_tree(state):
-    #return (state["A"] == 1 and state["B"] == 1) or (state["C"] == 1)
 
-    #a, b, c = state["A"], state["B"], state["C"]
-    #return (a == 1 and b == 1) or (a == 1 and c == 1) or (b == 1 and c == 1)
+    #generic
 
-    #sub_system = (state["A"] == 1 or state["B"] == 1) and (state["C"] == 1 or state["D"] == 1)
-    #critical_node = (state["E"] == 1)
-    #return sub_system or critical_node
+    return (state["A"] == 1 and state["B"] == 1) or (state["C"] == 1)
+
+    #2oo3
+
+    a, b, c = state["A"], state["B"], state["C"]
+    return (a == 1 and b == 1) or (a == 1 and c == 1) or (b == 1 and c == 1)
+
+    #bridge
+
+    sub_system = (state["A"] == 1 or state["B"] == 1) and (state["C"] == 1 or state["D"] == 1)
+    critical_node = (state["E"] == 1)
+    return sub_system or critical_node
+
+    #spof
 
     power_fail = (state["A"] == 1)
     cooling_fail = (state["B"] == 1)
@@ -283,7 +289,10 @@ def train_mlp_cross_entropy(lambda_, mu_, T, epochs, N_trajs, N_samples, rho, no
 
     return model, loss_history, elite_history, alpha_hist, beta_hist
 
-def plot_loss(loss_history, elite_history):
+def plot_loss(loss_history, elite_history, tree_type):
+
+    os.makedirs(f"results/{tree_type}", exist_ok=True)
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
 
     ax1.plot(loss_history)
@@ -299,9 +308,9 @@ def plot_loss(loss_history, elite_history):
     ax2.grid(True)
 
     plt.tight_layout()
-    plt.savefig("Andamento_loss.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"results/{tree_type}/Andamento_loss.png", dpi=300, bbox_inches='tight')
 
-def plot_alpha_beta(alpha_hist, beta_hist):
+def plot_alpha_beta(alpha_hist, beta_hist, tree_type):
     for comp in alpha_hist:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
 
@@ -331,11 +340,10 @@ def plot_alpha_beta(alpha_hist, beta_hist):
 
         plt.tight_layout()
 
-        filename = f"Andamento_alfa_beta_{comp}.png"
-        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.savefig(f"results/{tree_type}/Andamento_alfa_beta_{comp}.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
 
-def plot_distribution(active_weights):
+def plot_weights_distribution(active_weights, tree_type):
     if active_weights:
         plt.figure(figsize=(10, 6))
         plt.hist(np.log10(active_weights), bins=50, color='skyblue', edgecolor='black')
@@ -343,7 +351,7 @@ def plot_distribution(active_weights):
         plt.xlabel("Log10(Peso W)")
         plt.ylabel("Frequenza (Numero di Traiettorie)")
         plt.grid(True, alpha=0.3)
-        plt.savefig("distribuzione_pesi_IS.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"results/{tree_type}/Andamento_distribuzioni_IS.png", dpi=300, bbox_inches='tight')
         print("--> Grafico salvato come 'distribuzione_pesi_IS.png'")
     else:
         print("Nessun peso maggiore di zero trovato per il grafico.")
@@ -390,11 +398,11 @@ def compare_MC_IS(lambda_, mu_, alpha, beta, T, N):
 
 if __name__ == "__main__":
 
-    #lambda_ = {"A": 1e-5, "B": 2e-5, "C": 1e-6}
-    #mu_ = {"A": 1e-1, "B": 1e-1, "C": 1e-1}
+    lambda_ = {"A": 1e-5, "B": 2e-5, "C": 1e-6}
+    mu_ = {"A": 1e-1, "B": 1e-1, "C": 1e-1}
 
-    lambda_ = {"A": 1e-5, "B": 2e-5, "C": 1e-6, "D": 1e-7, "E": 1e-8}
-    mu_ = {"A": 1e-1, "B": 1e-1, "C": 1e-1, "D": 1e-1, "E": 1e-2}
+    #lambda_ = {"A": 1e-5, "B": 2e-5, "C": 1e-6, "D": 1e-7, "E": 1e-8}
+    #mu_ = {"A": 1e-1, "B": 1e-1, "C": 1e-1, "D": 1e-1, "E": 1e-2}
 
     T = 1e3
 
@@ -423,8 +431,13 @@ if __name__ == "__main__":
         noise_std=1.0  
     )
 
-    plot_loss(loss_hist, elite_hist)
-    plot_alpha_beta(alpha_hist, beta_hist)
+    tree_type = "generic"
+    #tree_type = "2su3"
+    #tree_type = "bridge"
+    #tree_type = "spof"
+
+    plot_loss(loss_hist, elite_hist, tree_type)
+    plot_alpha_beta(alpha_hist, beta_hist, tree_type)
 
     
     alpha = {i: alpha_hist[i][-1] for i in alpha_hist}
@@ -441,7 +454,7 @@ if __name__ == "__main__":
 
     active_weights = [w for w in weights if w > 0]
 
-    plot_distribution(active_weights)
+    plot_weights_distribution(active_weights, tree_type)
 
     print(f"Crude MC estimate:     {p_mc:.6e}")
     print(f"IS estimate:           {p_is:.6e}")
