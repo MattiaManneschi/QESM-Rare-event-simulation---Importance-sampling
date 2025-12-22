@@ -1,9 +1,9 @@
 # Adaptive Importance Sampling for Rare Event Simulation in Fault Tree Analysis using MLP
 
-1. **Inizializzazione e Setup**: Il sistema definisce i parametri nominali dei componenti ($\lambda, \mu$) e la topologia dell'albero dei guasti desiderata.
+1. **Inizializzazione e Setup**: Il sistema definisce i parametri nominali dei componenti (lambda, mu) e la topologia dell'albero dei guasti desiderata.
 2. **Ciclo di Training (Cross-Entropy Method)**: 
     * La MLP riceve in input le caratteristiche delle traiettorie attuali.
-    * Vengono campionati nuovi parametri di biasing ($\alpha, \beta$) introducendo del rumore per favorire l'esplorazione.
+    * Vengono campionati nuovi parametri di biasing (alpha, beta) introducendo del rumore per favorire l'esplorazione.
     * Il simulatore CTMC genera nuove traiettorie; quelle che portano al guasto del sistema entrano nell' "Elite Set".
     * La rete neurale viene aggiornata tramite backpropagation per massimizzare la probabilità di osservare eventi rari nelle epoche successive.
 3. **Analisi e Visualizzazione**: Al termine del training, vengono generati grafici che mostrano la convergenza della Loss e l'evoluzione temporale dei parametri ottimali appresi per ogni componente.
