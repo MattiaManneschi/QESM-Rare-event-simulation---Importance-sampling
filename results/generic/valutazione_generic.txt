@@ -1,0 +1,39 @@
+============================================================
+VALUTAZIONE FINALE - GENERIC
+============================================================
+Data: 2026-01-07 15:05:00
+Simulazioni: 50000
+
+PARAMETRI OTTIMIZZATI:
+----------------------------------------
+  A: alpha=2.4951, beta=0.4033
+  B: alpha=2.5000, beta=0.5711
+  C: alpha=1.5002, beta=0.6000
+
+RISULTATI IMPORTANCE SAMPLING:
+----------------------------------------
+  Top events: 81/50000 (0.16%)
+  Stima probabilità: 1.565892e-03
+  Errore standard: 1.946403e-04
+  Coefficiente di variazione: 0.1243
+  IC 95%: [1.184397e-03, 1.947387e-03]
+
+RISULTATI MC NAIVE:
+----------------------------------------
+  Top events: 59/50000 (0.12%)
+  Stima probabilità: 1.180000e-03
+  Errore standard: 1.535323e-04
+  Coefficiente di variazione: 0.1301
+
+CONFRONTO IS VS MC:
+----------------------------------------
+  Variance Reduction Factor: 0.62x
+  Simulazioni MC equivalenti: 31110
+  Differenza stime: 3.858922e-04
+  Rapporto stime (IS/MC): 1.3270
+
+VALUTAZIONE:
+----------------------------------------
+  ✗ IS non migliora rispetto a MC naive
+  ⚠ Stime discordanti (rapporto: 1.33)
+============================================================

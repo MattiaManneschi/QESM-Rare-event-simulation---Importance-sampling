@@ -6,9 +6,153 @@ import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
 import numpy as np
+from collections import defaultdict
+from datetime import datetime
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Hardware rilevato: {device}")
+
+
+class AlphaBetaMLP(nn.Module):
+
+    def __init__(self, n_components, config=None):
+        super(AlphaBetaMLP, self).__init__()
+        self.config = config or OptimizedConfig()
+
+        self.net = nn.Sequential(
+            nn.Linear(n_components, 128),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, n_components * 2)
+        )
+
+        for m in self.net.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.5)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        out = self.net(x)
+        alpha_raw, beta_raw = torch.chunk(out, 2, dim=-1)
+
+        alpha = torch.sigmoid(alpha_raw) * (self.config.alpha_max - self.config.alpha_min) + self.config.alpha_min
+
+        beta = torch.sigmoid(beta_raw) * (self.config.beta_max - self.config.beta_min) + self.config.beta_min
+
+        return alpha, beta
+
+class DiagnosticLogger:
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.epoch_data = defaultdict(list)
+        self.trajectory_stats = []
+        self.weight_stats = []
+
+    def log_trajectory_batch(self, results, epoch):
+        top_events = sum(1 for r in results if r['top'])
+        log_weights = [r['log_w'] for r in results]
+
+        stats = {
+            'epoch': epoch,
+            'n_trajectories': len(results),
+            'top_events': top_events,
+            'top_rate': top_events / len(results) if results else 0,
+            'log_w_mean': np.mean(log_weights),
+            'log_w_std': np.std(log_weights),
+            'log_w_min': np.min(log_weights),
+            'log_w_max': np.max(log_weights),
+        }
+        self.trajectory_stats.append(stats)
+        return stats
+
+    def log_weights(self, weights, epoch):
+        if len(weights) == 0:
+            return None
+
+        weights_array = np.array(weights)
+        positive_weights = weights_array[weights_array > 0]
+
+        stats = {
+            'epoch': epoch,
+            'n_weights': len(weights),
+            'n_positive': len(positive_weights),
+            'mean': np.mean(weights_array),
+            'std': np.std(weights_array),
+            'max': np.max(weights_array),
+            'min': np.min(weights_array),
+        }
+
+        if len(positive_weights) > 0:
+            stats['positive_mean'] = np.mean(positive_weights)
+            stats['positive_std'] = np.std(positive_weights)
+
+        self.weight_stats.append(stats)
+        return stats
+
+    def print_epoch_summary(self, epoch, loss, alpha_dict, beta_dict,
+                            n_elite, n_samples, extra_info=None):
+        print(f"\n{'=' * 60}")
+        print(f"EPOCH {epoch}")
+        print(f"{'=' * 60}")
+        print(f"Loss: {loss:.6f}")
+        print(f"Elite samples: {n_elite}/{n_samples}")
+
+        print("\nParametri Alpha:")
+        for c, v in alpha_dict.items():
+            print(f"  {c}: {v:.4f}")
+
+        print("\nParametri Beta:")
+        for c, v in beta_dict.items():
+            print(f"  {c}: {v:.4f}")
+
+        if self.trajectory_stats:
+            last_traj = self.trajectory_stats[-1]
+            print(f"\nTraiettorie:")
+            print(f"  Top events rate: {last_traj['top_rate'] * 100:.2f}%")
+            print(f"  Log weights: mean={last_traj['log_w_mean']:.4f}, "
+                  f"std={last_traj['log_w_std']:.4f}")
+
+        if self.weight_stats:
+            last_w = self.weight_stats[-1]
+            print(f"\nPesi IS:")
+            print(f"  Mean: {last_w['mean']:.6e}")
+            print(f"  Std: {last_w['std']:.6e}")
+            print(f"  Range: [{last_w['min']:.6e}, {last_w['max']:.6e}]")
+
+        if extra_info:
+            print(f"\nInfo aggiuntive:")
+            for k, v in extra_info.items():
+                print(f"  {k}: {v}")
+
+class OptimizedConfig:
+
+    def __init__(self):
+        self.learning_rate = 0.01
+
+        self.n_trajectories = 1000
+
+        self.n_samples = 200
+
+        self.epochs = 50
+
+        self.rho = 0.15
+
+        self.alpha_std = 0.3
+        self.beta_std = 0.05
+
+        self.alpha_min = 1.5
+        self.alpha_max = 2.5
+        self.beta_min = 0.4
+        self.beta_max = 0.6
+
+        self.max_grad_norm = 0.5
+
+        self.entropy_coef = 0.01
 
 def fault_tree(state):
 
@@ -16,384 +160,461 @@ def fault_tree(state):
 
     return (state["A"] == 1 and state["B"] == 1) or (state["C"] == 1)
 
-    #2oo3
+    """"#2oo3
 
     a, b, c = state["A"], state["B"], state["C"]
-    return (a == 1 and b == 1) or (a == 1 and c == 1) or (b == 1 and c == 1)
+    return (a == 1 and b == 1) or (a == 1 and c == 1) or (b == 1 and c == 1) """
 
-    #bridge
+    """"#bridge
 
     sub_system = (state["A"] == 1 or state["B"] == 1) and (state["C"] == 1 or state["D"] == 1)
     critical_node = (state["E"] == 1)
-    return sub_system or critical_node
+    return sub_system or critical_node """
 
-    #spof
+    """"#spof
 
     power_fail = (state["A"] == 1)
     cooling_fail = (state["B"] == 1)
     server_cluster_fail = (state["C"] == 1 and state["D"] == 1 and state["E"] == 1)
-    return power_fail or cooling_fail or server_cluster_fail
+    return power_fail or cooling_fail or server_cluster_fail """
 
-def simulate_CTMC(lambda_, mu_, alpha, beta, T):
+def simulate_CTMC(lambda_, mu_, alpha, beta, T, debug=False):
     t = 0.0
     state = {i: 0 for i in lambda_}
-
-    NF = {i: 0 for i in lambda_}
-    NR = {i: 0 for i in lambda_}
-    Tup = {i: 0.0 for i in lambda_}
-    Tdn = {i: 0.0 for i in lambda_}
-
     log_w = 0.0
+    top_event_hit = False
+    n_transitions = 0
+
+    debug_info = [] if debug else None
 
     while t < T:
-        rates = {}
-        for i in state:
-            rates[i] = (
-                alpha[i] * lambda_[i]
-                if state[i] == 0
-                else beta[i] * mu_[i]
-            )
+        rates_orig = {}
+        rates_is = {}
 
-        R = sum(rates.values())
-        if R == 0:
-            break
-
-        dt = random.expovariate(R)
-        dt = min(dt, T - t)
-
-        for i in state:
+        for i in lambda_:
             if state[i] == 0:
-                Tup[i] += dt
+                rates_orig[i] = lambda_[i]
+                rates_is[i] = lambda_[i] * alpha[i]
             else:
-                Tdn[i] += dt
+                rates_orig[i] = mu_[i]
+                rates_is[i] = mu_[i] * beta[i]
 
-        t += dt
-        if t >= T:
+        R_orig = sum(rates_orig.values())
+        R_is = sum(rates_is.values())
+
+        if R_is <= 0:
             break
 
-        r = random.uniform(0, R)
-        acc = 0.0
-        comp = None
-        for i, rate in rates.items():
-            acc += rate
-            if r <= acc:
-                comp = i
-                break
+        dt = random.expovariate(R_is)
 
-        if comp is None:
-            comp = list(rates.keys())[-1]
+        if t + dt > T:
+            log_w += (R_is - R_orig) * (T - t)
+            break
 
-        if state[comp] == 0:
-            state[comp] = 1
-            NF[comp] += 1
-            if alpha[comp] > 1e-10:
-                log_w += math.log(1.0 / alpha[comp])
-            else:
-                log_w += math.log(1.0 / 1e-10)
-        else:
-            state[comp] = 0
-            NR[comp] += 1
-            if beta[comp] > 1e-10:
-                log_w += math.log(1.0 / beta[comp])
-            else:
-                log_w += math.log(1.0 / 1e-10)
+        log_w += (R_is - R_orig) * dt
+        t += dt
+        n_transitions += 1
 
-    for i in state:
-        log_w += (lambda_[i] - alpha[i] * lambda_[i]) * Tup[i]
-        log_w += (mu_[i] - beta[i] * mu_[i]) * Tdn[i]
+        comps = list(lambda_.keys())
+        p_is = [rates_is[c] / R_is for c in comps]
+        chosen_comp = random.choices(comps, weights=p_is)[0]
 
-    log_w = max(min(log_w, 700), -700)
+        rate_orig_chosen = rates_orig[chosen_comp]
+        rate_is_chosen = rates_is[chosen_comp]
 
-    return {
-        "NF": NF,
-        "NR": NR,
-        "Tup": Tup,
-        "Tdn": Tdn,
+        log_w += math.log((rate_orig_chosen / R_orig) / (rate_is_chosen / R_is))
+
+        if debug:
+            debug_info.append({
+                't': t,
+                'comp': chosen_comp,
+                'state_before': state[chosen_comp],
+                'log_w': log_w,
+                'R_orig': R_orig,
+                'R_is': R_is
+            })
+
+        state[chosen_comp] = 1 - state[chosen_comp]
+
+        if fault_tree(state):
+            top_event_hit = True
+
+    result = {
+        "top": top_event_hit,
         "log_w": log_w,
-        "top": fault_tree(state)
+        "n_transitions": n_transitions,
+        "final_state": dict(state)
     }
 
-def extract_features(trajs, lambda_, mu_):
-    feats = []
-    N = len(trajs)
-    for i in lambda_:
-        feats.extend([
-            math.log10(lambda_[i]),
-            math.log10(mu_[i]),
-            sum(tr["NF"][i] for tr in trajs) / N,
-            sum(tr["NR"][i] for tr in trajs) / N,
-            sum(tr["Tup"][i] for tr in trajs) / (N * 1000.0)
-        ])
-    return torch.tensor(feats, dtype=torch.float32)
+    if debug:
+        result["debug"] = debug_info
 
-class AlphaBetaMLP(nn.Module):
-    def __init__(self, input_dim, n_comp):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 2 * n_comp)
-        )
+    return result
 
-    def forward(self, x):
-        out = self.net(x)
-        a, b = torch.chunk(out, 2, dim=-1)
-        return a, b
+def train_mlp_cross_entropy(lambda_, mu_, T, config=None):
 
-def sample_parameters(alpha_raw, beta_raw, noise_std):
-    n = len(alpha_raw)
+    if config is None:
+        config = OptimizedConfig()
 
-    c_n_alpha = torch.randn(n, device=alpha_raw.device)
-    c_n_beta = torch.randn(n, device=beta_raw.device)
-
-    alpha_noisy = alpha_raw + noise_std * c_n_alpha
-    beta_noisy = beta_raw + noise_std * c_n_beta
-
-    alpha = torch.clamp(torch.exp(alpha_noisy), min=0.5, max=3.0)
-    beta = torch.clamp(torch.sigmoid(beta_noisy), min=0.1, max=0.9)
-
-    return alpha, beta, c_n_alpha, c_n_beta
-
-def cross_entropy_loss_ML(samples_data, rho):
-    log_performances = []
-    for sample in samples_data:
-        traj_logs = [tr["log_w"] for tr in sample['trajs'] if tr["top"]]
-
-        if traj_logs:
-            max_log = max(traj_logs)
-            lse = max_log + math.log(sum(math.exp(lw - max_log) for lw in traj_logs))
-            log_perf = lse - math.log(len(sample['trajs']))
-            log_performances.append(log_perf)
-        else:
-            log_performances.append(-float('inf'))
-
-    sorted_indices = sorted(range(len(log_performances)),
-                            key=lambda i: log_performances[i], reverse=True)
-
-    elite_idx = [i for i in sorted_indices[:max(1, int(rho * len(log_performances)))]
-                 if log_performances[i] > -float('inf')]
-
-    elite_mean = np.mean([math.exp(min(log_performances[i], 20)) for i in elite_idx]) if elite_idx else 0
-    return elite_idx, elite_mean, log_performances
-
-def train_mlp_cross_entropy(lambda_, mu_, T, epochs, N_trajs, N_samples, rho, noise_std):
+    n = len(lambda_)
     comps = list(lambda_.keys())
-    n = len(comps)
 
-    dummy_x = extract_features(
-        [simulate_CTMC(lambda_, mu_, {i: 1.0 for i in comps}, {i: 1.0 for i in comps}, T)],
-        lambda_, mu_
-    )
-    input_dim = dummy_x.shape[0]
+    model = AlphaBetaMLP(n, config).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
-    model = AlphaBetaMLP(input_dim, n).to(device)
-    opt = optim.Adam(model.parameters(), lr=1e-5, weight_decay=1e-3)
+    logger = DiagnosticLogger()
 
-    alpha_init = {i: 1.0 for i in comps}
-    beta_init = {i: 1.0 for i in comps}
+    alpha_hist = {c: [] for c in comps}
+    beta_hist = {c: [] for c in comps}
+    loss_hist = []
+    prob_estimates = []
 
-    loss_history = []
-    elite_history = []
-    alpha_hist = {i: [] for i in comps}
-    beta_hist = {i: [] for i in comps}
+    input_tensor = torch.eye(n).mean(dim=0).unsqueeze(0).to(device)
 
-    best_elite_mean = -float('inf')
-    print(f"--- AVVIO TRAINING STABILE (Log-Domain) ---")
+    print("\n" + "="*60)
+    print("INIZIO TRAINING")
+    print("="*60)
+    print(f"Configurazione:")
+    print(f"  Learning rate: {config.learning_rate}")
+    print(f"  Epochs: {config.epochs}")
+    print(f"  Trajectories per sample: {config.n_trajectories}")
+    print(f"  Samples per epoch: {config.n_samples}")
+    print(f"  Elite fraction (rho): {config.rho}")
+    print("="*60 + "\n")
 
-    for ep in range(epochs):
-        with torch.no_grad():
-            trajs_init = [simulate_CTMC(lambda_, mu_, alpha_init, beta_init, T) for _ in range(N_trajs)]
-            x = extract_features(trajs_init, lambda_, mu_).to(device)
+    for epoch in range(config.epochs):
+        alpha_mu, beta_mu = model(input_tensor)
 
-        current_noise = noise_std * (0.995 ** ep)
-
-        alpha_raw, beta_raw = model(x)
         samples_data = []
         log_performances = []
+        all_weights_epoch = []
 
-        for s in range(N_samples):
-            a_s, b_s, c_n_a, c_n_b = sample_parameters(alpha_raw, beta_raw, current_noise)
-            a_dict = {c_id: a_s[k].item() for k, c_id in enumerate(comps)}
-            b_dict = {c_id: b_s[k].item() for k, c_id in enumerate(comps)}
+        for s in range(config.n_samples):
+            dist_a = torch.distributions.Normal(alpha_mu, config.alpha_std)
+            dist_b = torch.distributions.Normal(beta_mu, config.beta_std)
 
-            trajs_s = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T) for _ in range(N_trajs)]
-            traj_logs = [tr["log_w"] for tr in trajs_s if tr["top"]]
+            a_sampled = dist_a.sample()
+            b_sampled = dist_b.sample()
+
+            a_dict = {c: torch.clamp(a_sampled[0, i],
+                                      config.alpha_min,
+                                      config.alpha_max).item()
+                      for i, c in enumerate(comps)}
+            b_dict = {c: torch.clamp(b_sampled[0, i],
+                                      config.beta_min,
+                                      config.beta_max).item()
+                      for i, c in enumerate(comps)}
+
+            trajs = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T)
+                     for _ in range(config.n_trajectories)]
+
+            traj_logs = [tr["log_w"] for tr in trajs if tr["top"]]
+
+            weights = [math.exp(tr["log_w"]) if tr["top"] else 0.0 for tr in trajs]
+            all_weights_epoch.extend(weights)
 
             if traj_logs:
                 m_log = max(traj_logs)
                 lse = m_log + math.log(sum(math.exp(lw - m_log) for lw in traj_logs))
-                log_perf = lse - math.log(N_trajs)
+                log_perf = lse - math.log(config.n_trajectories)
                 log_performances.append(log_perf)
             else:
                 log_performances.append(-1e10)
 
-            samples_data.append({'alpha': a_s, 'beta': b_s, 'c_n_a': c_n_a, 'c_n_b': c_n_b})
+            samples_data.append({
+                'a_sampled': a_sampled,
+                'b_sampled': b_sampled,
+                'dist_a': dist_a,
+                'dist_b': dist_b,
+                'a_dict': a_dict,
+                'b_dict': b_dict,
+                'n_top': len(traj_logs)
+            })
 
-        sorted_idx = sorted(range(len(log_performances)), key=lambda i: log_performances[i], reverse=True)
-        n_elite = max(1, int(rho * N_samples))
-        elite_indices = [i for i in sorted_idx[:n_elite] if log_performances[i] > -1e9]
+        logger.log_weights(all_weights_epoch, epoch)
+
+        sorted_idx = sorted(range(len(log_performances)),
+                            key=lambda i: log_performances[i], reverse=True)
+        n_elite = max(1, int(config.rho * config.n_samples))
+        elite_indices = [i for i in sorted_idx[:n_elite]
+                         if log_performances[i] > -1e9]
 
         if elite_indices:
-            elite_logs = torch.tensor([log_performances[i] for i in elite_indices], device=device)
-            max_log = torch.max(elite_logs)
-            lme = max_log + torch.log(torch.mean(torch.exp(elite_logs - max_log)))
-            current_elite_log_mean = lme.item()
+            elite_logs = torch.tensor([log_performances[i] for i in elite_indices],
+                                      device=device)
 
             with torch.no_grad():
                 shifted_logs = elite_logs - torch.max(elite_logs)
                 weights = torch.softmax(shifted_logs, dim=0)
 
             policy_loss = 0.0
+            entropy_bonus = 0.0
+
             for i, idx in enumerate(elite_indices):
                 sample = samples_data[idx]
-                log_p = -0.5 * torch.sum(((sample['alpha'] - alpha_raw) / current_noise) ** 2) + \
-                        -0.5 * torch.sum(((sample['beta'] - beta_raw) / current_noise) ** 2)
-                policy_loss -= weights[i] * log_p / (len(comps) * 2)
+                log_p_a = sample['dist_a'].log_prob(sample['a_sampled']).sum()
+                log_p_b = sample['dist_b'].log_prob(sample['b_sampled']).sum()
+                policy_loss -= weights[i] * (log_p_a + log_p_b)
 
-            opt.zero_grad()
-            policy_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
-            opt.step()
+                entropy_bonus += sample['dist_a'].entropy().sum()
+                entropy_bonus += sample['dist_b'].entropy().sum()
 
-            if current_elite_log_mean > best_elite_mean:
-                best_elite_mean = current_elite_log_mean
-                torch.save(model.state_dict(), "best_model.pth")
-                print(f"--> Nuovo Record Epoca {ep}: Elite Mean {best_elite_mean:.2e}. Modello salvato.")
+            entropy_bonus = entropy_bonus / len(elite_indices)
+            total_loss = policy_loss - config.entropy_coef * entropy_bonus
 
-            loss_history.append(policy_loss.item())
-            elite_history.append(current_elite_log_mean)
+            optimizer.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                            max_norm=config.max_grad_norm)
+            optimizer.step()
 
-            for k, i in enumerate(comps):
-                a_val = torch.exp(alpha_raw[k]).clamp(0.5, 4.0).item()
-                b_val = torch.sigmoid(beta_raw[k]).clamp(0.2, 0.8).item()
-                alpha_init[i], beta_init[i] = a_val, b_val
-                alpha_hist[i].append(a_val)
-                beta_hist[i].append(b_val)
+            loss_val = total_loss.item()
+            loss_hist.append(loss_val)
+            scheduler.step(loss_val)
 
-            print(
-                f"Ep {ep:02d} | Loss: {policy_loss.item():.2e} | ElitePerf (LogSum): {max(log_performances):.2f} | Elite: {len(elite_indices)}/{N_samples}")
+            current_prob = np.mean([w for w in all_weights_epoch if w > 0]) if any(w > 0 for w in all_weights_epoch) else 0
+            prob_estimates.append(current_prob)
 
+            if epoch % 10 == 0:
+                a_dict = {c: alpha_mu[0, i].item() for i, c in enumerate(comps)}
+                b_dict = {c: beta_mu[0, i].item() for i, c in enumerate(comps)}
+
+                logger.print_epoch_summary(
+                    epoch, loss_val, a_dict, b_dict,
+                    len(elite_indices), config.n_samples,
+                    extra_info={
+                        'Prob estimate': f"{current_prob:.6e}",
+                        'LR': f"{optimizer.param_groups[0]['lr']:.6f}"
+                    }
+                )
         else:
-            print(f"Ep {ep:02d} | Nessun guasto trovato. Esplorazione attiva.")
-            loss_history.append(0.0)
-            elite_history.append(0.0)
-            for i in comps:
-                alpha_hist[i].append(alpha_init[i])
-                beta_hist[i].append(beta_init[i])
+            loss_hist.append(0.0)
+            prob_estimates.append(0.0)
+            print(f"Epoch {epoch:3d} | Nessun elite trovato - aumentare alpha?")
 
-    if os.path.exists("best_model.pth"):
-        model.load_state_dict(torch.load("best_model.pth"))
-        print("--- Training concluso. Caricato il miglior modello salvato. ---")
+        for i, c in enumerate(comps):
+            alpha_hist[c].append(alpha_mu[0, i].item())
+            beta_hist[c].append(beta_mu[0, i].item())
 
-    return model, loss_history, elite_history, alpha_hist, beta_hist
+    return model, loss_hist, alpha_hist, beta_hist, prob_estimates, logger
 
-def plot_loss(loss_history, elite_history, tree_type):
+def evaluate_model(model, lambda_, mu_, T, N_eval=50000):
+    print("\n" + "=" * 60)
+    print("VALUTAZIONE FINALE")
+    print("=" * 60)
 
-    os.makedirs(f"results/{tree_type}", exist_ok=True)
+    comps = list(lambda_.keys())
+    input_tensor = torch.eye(len(lambda_)).mean(dim=0).unsqueeze(0).to(device)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    with torch.no_grad():
+        alpha_final, beta_final = model(input_tensor)
 
-    ax1.plot(loss_history)
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.set_title("Training Loss")
-    ax1.grid(True)
+    a_f = {c: alpha_final[0, i].item() for i, c in enumerate(comps)}
+    b_f = {c: beta_final[0, i].item() for i, c in enumerate(comps)}
 
-    ax2.plot(elite_history)
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Elite Set Mean Performance")
-    ax2.set_title("Elite Set Performance")
-    ax2.grid(True)
+    print("\nParametri ottimizzati:")
+    for c in comps:
+        print(f"  {c}: alpha={a_f[c]:.4f}, beta={b_f[c]:.4f}")
+
+    print(f"\nSimulando {N_eval} traiettorie...")
+    results = [simulate_CTMC(lambda_, mu_, a_f, b_f, T)
+               for _ in range(N_eval)]
+
+    n_top = sum(1 for r in results if r['top'])
+    weights = np.array([math.exp(r['log_w']) if r['top'] else 0.0 for r in results])
+
+    p_is = np.mean(weights)
+    var_is = np.var(weights) / N_eval
+    std_is = np.sqrt(var_is)
+
+    cv = std_is / p_is if p_is > 0 else float('inf')
+
+    ci_low = max(0, p_is - 1.96 * std_is)
+    ci_high = p_is + 1.96 * std_is
+
+    print(f"\nRisultati:")
+    print(f"  Top events: {n_top}/{N_eval} ({100 * n_top / N_eval:.2f}%)")
+    print(f"  Stima probabilità (IS): {p_is:.6e}")
+    print(f"  Errore standard: {std_is:.6e}")
+    print(f"  Coefficiente di variazione: {cv:.4f}")
+    print(f"  IC 95%: [{ci_low:.6e}, {ci_high:.6e}]")
+
+    print("\n=== CONFRONTO IS VS MC ===")
+    naive_results = [simulate_CTMC(lambda_, mu_,
+                                             {c: 1.0 for c in comps},
+                                             {c: 1.0 for c in comps}, T)
+                     for _ in range(N_eval)]
+    n_top_naive = sum(1 for r in naive_results if r['top'])
+    p_naive = n_top_naive / N_eval
+    var_naive = p_naive * (1 - p_naive) / N_eval
+    std_naive = np.sqrt(var_naive)
+    cv_naive = std_naive / p_naive if p_naive > 0 else float('inf')
+
+    print(f"MC Naive:")
+    print(f"  Stima: {p_naive:.6e}")
+    print(f"  Std: {std_naive:.6e}")
+    print(f"  CV: {cv_naive:.4f}")
+
+    print(f"\nImportance Sampling:")
+    print(f"  Stima: {p_is:.6e}")
+    print(f"  Std: {std_is:.6e}")
+    print(f"  CV: {cv:.4f}")
+
+    var_reduction = var_naive / var_is if var_is > 0 else 0
+    print(f"\nVariance Reduction Factor: {var_reduction:.2f}x")
+
+    equivalent_mc_samples = N_eval * var_reduction
+    print(f"Simulazioni MC equivalenti: {equivalent_mc_samples:.0f}")
+
+    eval_results = {
+        'p_is': p_is,
+        'std_is': std_is,
+        'cv': cv,
+        'ci': (ci_low, ci_high),
+        'alpha': a_f,
+        'beta': b_f,
+        'n_top': n_top,
+        'top_rate': n_top / N_eval
+    }
+
+    save_results_to_file(
+        tree_type=tree_type,
+        eval_results=eval_results,
+        p_naive=p_naive,
+        n_top_naive=n_top_naive,
+        N_eval=N_eval,
+        var_naive=var_naive,
+        std_naive=std_naive,
+        cv_naive=cv_naive,
+        var_reduction=var_reduction,
+        equivalent_mc_samples=equivalent_mc_samples
+    )
+
+def plot_results_extended(loss_hist, alpha_hist, beta_hist, prob_estimates, tree_type):
+    output_dir = f"results/{tree_type}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    epochs = range(len(loss_hist))
+
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.plot(epochs, loss_hist, color='tab:red', linewidth=1.5, alpha=0.7)
+    plt.title(f"Andamento Loss - {tree_type}", fontsize=12)
+    plt.xlabel("Epoca")
+    plt.ylabel("Cross-Entropy Loss")
+    plt.grid(True, linestyle='--', alpha=0.5)
+
+    plt.subplot(1, 2, 2)
+    valid_probs = [p for p in prob_estimates if p > 0]
+    valid_epochs = [i for i, p in enumerate(prob_estimates) if p > 0]
+    if valid_probs:
+        plt.semilogy(valid_epochs, valid_probs, color='tab:blue', linewidth=1.5)
+        plt.title(f"Stima Probabilità durante Training", fontsize=12)
+        plt.xlabel("Epoca")
+        plt.ylabel("Probabilità (scala log)")
+        plt.grid(True, linestyle='--', alpha=0.5)
 
     plt.tight_layout()
-    plt.savefig(f"results/{tree_type}/Andamento_loss.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/andamento_loss.png", dpi=300)
+    plt.close()
 
-def plot_alpha_beta(alpha_hist, beta_hist, tree_type):
-    for comp in alpha_hist:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-        epochs = range(len(alpha_hist[comp]))
+    for comp, values in alpha_hist.items():
+        axes[0, 0].plot(epochs, values, label=f"α_{comp}", linewidth=1.5)
+    axes[0, 0].set_title("Evoluzione Alpha (accelerazione guasti)")
+    axes[0, 0].set_ylabel("Valore Alpha")
+    axes[0, 0].legend(loc='best')
+    axes[0, 0].grid(True, linestyle='--', alpha=0.5)
+    axes[0, 0].axhline(y=1.0, color='gray', linestyle=':', label='No modifica')
 
-        a_vals = alpha_hist[comp]
-        ax1.plot(epochs, a_vals, color='tab:blue', marker='o', markersize=3, linewidth=1.5)
-        ax1.set_title(f"Alpha Evolution (Biasing) - {comp}")
-        ax1.set_xlabel("Epoch")
-        ax1.set_ylabel("Value")
-        ax1.grid(True, linestyle='--', alpha=0.6)
+    for comp, values in beta_hist.items():
+        axes[0, 1].plot(epochs, values, label=f"β_{comp}", linestyle='--', linewidth=1.5)
+    axes[0, 1].set_title("Evoluzione Beta (rallentamento riparazioni)")
+    axes[0, 1].set_ylabel("Valore Beta")
+    axes[0, 1].legend(loc='best')
+    axes[0, 1].grid(True, linestyle='--', alpha=0.5)
+    axes[0, 1].axhline(y=1.0, color='gray', linestyle=':', label='No modifica')
 
-        a_min, a_max = min(a_vals), max(a_vals)
-        a_delta = max(0.01, a_max - a_min)
-        ax1.set_ylim(a_min - a_delta * 0.1, a_max + a_delta * 0.1)
+    final_alphas = {c: vals[-1] for c, vals in alpha_hist.items()}
+    axes[1, 0].bar(final_alphas.keys(), final_alphas.values(), color='steelblue')
+    axes[1, 0].set_title("Alpha finali")
+    axes[1, 0].set_ylabel("Valore")
+    axes[1, 0].axhline(y=1.0, color='red', linestyle='--', label='Baseline')
 
-        b_vals = beta_hist[comp]
-        ax2.plot(epochs, b_vals, color='tab:orange', marker='s', markersize=3, linewidth=1.5)
-        ax2.set_title(f"Beta Evolution (Correction) - {comp}")
-        ax2.set_xlabel("Epoch")
-        ax2.set_ylabel("Value")
-        ax2.grid(True, linestyle='--', alpha=0.6)
+    final_betas = {c: vals[-1] for c, vals in beta_hist.items()}
+    axes[1, 1].bar(final_betas.keys(), final_betas.values(), color='coral')
+    axes[1, 1].set_title("Beta finali")
+    axes[1, 1].set_ylabel("Valore")
+    axes[1, 1].axhline(y=1.0, color='red', linestyle='--', label='Baseline')
 
-        b_min, b_max = min(b_vals), max(b_vals)
-        b_delta = max(0.01, b_max - b_min)
-        ax2.set_ylim(b_min - b_delta * 0.1, b_max + b_delta * 0.1)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/andamento_parametri.png", dpi=300)
+    plt.close()
 
-        plt.tight_layout()
+def save_results_to_file(tree_type, eval_results, p_naive, n_top_naive, N_eval, var_naive, std_naive, cv_naive, var_reduction, equivalent_mc_samples):
+    output_dir = f"results/{tree_type}"
+    os.makedirs(output_dir, exist_ok=True)
 
-        plt.savefig(f"results/{tree_type}/Andamento_alfa_beta_{comp}.png", dpi=300, bbox_inches='tight')
-        plt.close(fig)
+    filepath = f"{output_dir}/valutazione_{tree_type}.txt"
 
-def plot_weights_distribution(active_weights, tree_type):
-    if active_weights:
-        plt.figure(figsize=(10, 6))
-        plt.hist(np.log10(active_weights), bins=50, color='skyblue', edgecolor='black')
-        plt.title("Analisi della Varianza: Distribuzione Logaritmica dei Pesi IS")
-        plt.xlabel("Log10(Peso W)")
-        plt.ylabel("Frequenza (Numero di Traiettorie)")
-        plt.grid(True, alpha=0.3)
-        plt.savefig(f"results/{tree_type}/Andamento_distribuzioni_IS.png", dpi=300, bbox_inches='tight')
-        print("--> Grafico salvato come 'distribuzione_pesi_IS.png'")
-    else:
-        print("Nessun peso maggiore di zero trovato per il grafico.")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def estimate_probability(trajs):
-    return sum(tr["top"] for tr in trajs) / len(trajs)
+    with open(filepath, 'w') as f:
+        f.write("=" * 60 + "\n")
+        f.write(f"VALUTAZIONE FINALE - {tree_type.upper()}\n")
+        f.write("=" * 60 + "\n")
+        f.write(f"Data: {timestamp}\n")
+        f.write(f"Simulazioni: {N_eval}\n")
+        f.write("\n")
 
-def compare_MC_IS(lambda_, mu_, alpha, beta, T, N):
-    trajs_mc = [simulate_CTMC(lambda_, mu_, {i: 1.0 for i in lambda_}, {i: 1.0 for i in lambda_}, T) for _ in range(N)]
-    p_mc = sum(1 for tr in trajs_mc if tr["top"]) / N
+        f.write("PARAMETRI OTTIMIZZATI:\n")
+        f.write("-" * 40 + "\n")
+        for c in eval_results['alpha']:
+            f.write(f"  {c}: alpha={eval_results['alpha'][c]:.4f}, beta={eval_results['beta'][c]:.4f}\n")
+        f.write("\n")
 
-    trajs_is = [simulate_CTMC(lambda_, mu_, alpha, beta, T) for _ in range(N)]
+        f.write("RISULTATI IMPORTANCE SAMPLING:\n")
+        f.write("-" * 40 + "\n")
+        f.write(
+            f"  Top events: {eval_results.get('n_top', 'N/A')}/{N_eval} ({eval_results.get('top_rate', 0) * 100:.2f}%)\n")
+        f.write(f"  Stima probabilità: {eval_results['p_is']:.6e}\n")
+        f.write(f"  Errore standard: {eval_results['std_is']:.6e}\n")
+        f.write(f"  Coefficiente di variazione: {eval_results['cv']:.4f}\n")
+        f.write(f"  IC 95%: [{eval_results['ci'][0]:.6e}, {eval_results['ci'][1]:.6e}]\n")
+        f.write("\n")
 
-    weights = []
-    for tr in trajs_is:
-        if tr["top"]:
-            log_w_bounded = min(tr["log_w"], 0.0)
-            try:
-                w = math.exp(log_w_bounded)
-            except OverflowError:
-                w = 0.0
-            weights.append(w)
+        f.write("RISULTATI MC NAIVE:\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"  Top events: {n_top_naive}/{N_eval} ({100 * n_top_naive / N_eval:.2f}%)\n")
+        f.write(f"  Stima probabilità: {p_naive:.6e}\n")
+        f.write(f"  Errore standard: {std_naive:.6e}\n")
+        f.write(f"  Coefficiente di variazione: {cv_naive:.4f}\n")
+        f.write("\n")
+
+        f.write("CONFRONTO IS VS MC:\n")
+        f.write("-" * 40 + "\n")
+        f.write(f"  Variance Reduction Factor: {var_reduction:.2f}x\n")
+        f.write(f"  Simulazioni MC equivalenti: {equivalent_mc_samples:.0f}\n")
+        f.write(f"  Differenza stime: {abs(eval_results['p_is'] - p_naive):.6e}\n")
+        f.write(f"  Rapporto stime (IS/MC): {eval_results['p_is'] / p_naive:.4f}\n")
+        f.write("\n")
+
+        f.write("VALUTAZIONE:\n")
+        f.write("-" * 40 + "\n")
+        if var_reduction > 1:
+            f.write(f"  ✓ IS è {var_reduction:.1f}x più efficiente di MC naive\n")
         else:
-            weights.append(0.0)
+            f.write(f"  ✗ IS non migliora rispetto a MC naive\n")
 
-    p_is = sum(weights) / N
-    n_top_is = sum(1 for w in weights if w > 0)
-    w_max = max(weights) if weights else 0.0
-    w_min = min(w for w in weights if w > 0) if n_top_is > 0 else 0.0
+        ratio = eval_results['p_is'] / p_naive
+        if 0.9 <= ratio <= 1.1:
+            f.write("  ✓ Stime concordanti (differenza < 10%)\n")
+        else:
+            f.write(f"  ⚠ Stime discordanti (rapporto: {ratio:.2f})\n")
 
-    print(f"Top events IS osservati: {n_top_is}/{N}")
-    print(f"Peso IS max: {w_max:.3e}")
-    print(f"Peso IS min (non-zero): {w_min:.3e}")
-
-    var_is = (sum(w ** 2 for w in weights) / N) - (p_is ** 2)
-
-    if p_is > 1e-300:
-        print(f"log10(IS estimate): {math.log10(p_is):.2f}")
-    else:
-        print("IS estimate sotto precisione numerica (p ≈ 0)")
-
-    return p_mc, p_is, max(0, var_is), weights
+        f.write("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
@@ -406,61 +627,32 @@ if __name__ == "__main__":
 
     T = 1e3
 
-    lambda_train = {k: v * 10 for k, v in lambda_.items()}
-
-    print("Inizio training con Cross-Entropy Method + ML...")
-
-    comps = list(lambda_.keys())
-    n = len(comps)
-
-    
-    alpha_init = {i: 1.0 for i in comps}
-    beta_init = {i: 1.0 for i in comps}
-    traj_dummy = [simulate_CTMC(lambda_train, mu_, alpha_init, beta_init, T)]
-    test_feats = extract_features(traj_dummy, lambda_train, mu_)
-    input_dim = test_feats.shape[0]  
-
-    print(f"Dimensione Input MLP rilevata: {input_dim}")
-
-    model, loss_hist, elite_hist, alpha_hist, beta_hist = train_mlp_cross_entropy(
-        lambda_train, mu_, T,
-        epochs=100,
-        N_trajs=500,  
-        N_samples=500,
-        rho=0.3,
-        noise_std=1.0  
-    )
-
     tree_type = "generic"
     #tree_type = "2su3"
     #tree_type = "bridge"
     #tree_type = "spof"
 
-    plot_loss(loss_hist, elite_hist, tree_type)
-    plot_alpha_beta(alpha_hist, beta_hist, tree_type)
+    config = OptimizedConfig()
 
-    
-    alpha = {i: alpha_hist[i][-1] for i in alpha_hist}
-    beta = {i: beta_hist[i][-1] for i in beta_hist}
-
-    alpha_valutazione = {i: max(alpha[i], 10.0) for i in alpha}
-    beta_valutazione = {i: min(beta[i], 0.5) for i in beta}
+    print("=" * 60)
+    print("IMPORTANCE SAMPLING PER FAULT TREE CON CTMC")
+    print("=" * 60)
+    print(f"\nTipo fault tree: {tree_type}")
+    print(f"Tempo simulazione T: {T}")
+    print("\nTassi di guasto (lambda):")
+    for c, v in lambda_.items():
+        print(f"  {c}: {v:.2e}")
+    print("\nTassi di riparazione (mu):")
+    for c, v in mu_.items():
+        print(f"  {c}: {v:.2e}")
 
     print("\n" + "=" * 60)
-    print("VALUTAZIONE FINALE")
+    print("TRAINING")
     print("=" * 60)
 
-    p_mc, p_is, var_is, weights = compare_MC_IS(lambda_, mu_, alpha_valutazione, beta_valutazione, T, N=500000)
+    trained_model, loss_hist, alpha_hist, beta_hist, prob_estimates, logger = train_mlp_cross_entropy(lambda_, mu_, T, config)
 
-    active_weights = [w for w in weights if w > 0]
+    evaluate_model(trained_model, lambda_, mu_, T)
 
-    plot_weights_distribution(active_weights, tree_type)
+    plot_results_extended(loss_hist, alpha_hist, beta_hist, prob_estimates, tree_type)
 
-    print(f"Crude MC estimate:     {p_mc:.6e}")
-    print(f"IS estimate:           {p_is:.6e}")
-    print(f"IS variance:           {var_is:.6e}")
-    print(f"IS std dev:            {math.sqrt(var_is):.6e}")
-
-    print(f"\nParametri ottimali:")
-    for i in alpha:
-        print(f"  {i}: alpha={alpha[i]:.4f}, beta={beta[i]:.4f}")

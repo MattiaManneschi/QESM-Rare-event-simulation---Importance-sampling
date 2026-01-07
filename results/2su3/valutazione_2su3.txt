@@ -1,0 +1,39 @@
+============================================================
+VALUTAZIONE FINALE - 2SU3
+============================================================
+Data: 2026-01-07 15:02:55
+Simulazioni: 50000
+
+PARAMETRI OTTIMIZZATI:
+----------------------------------------
+  A: alpha=2.0497, beta=0.4934
+  B: alpha=2.0038, beta=0.5076
+  C: alpha=2.0323, beta=0.4935
+
+RISULTATI IMPORTANCE SAMPLING:
+----------------------------------------
+  Top events: 1/50000 (0.00%)
+  Stima probabilità: 1.207352e-08
+  Errore standard: 1.207340e-08
+  Coefficiente di variazione: 1.0000
+  IC 95%: [0.000000e+00, 3.573737e-08]
+
+RISULTATI MC NAIVE:
+----------------------------------------
+  Top events: 0/50000 (0.00%)
+  Stima probabilità: 0.000000e+00
+  Errore standard: 0.000000e+00
+  Coefficiente di variazione: inf
+
+CONFRONTO IS VS MC:
+----------------------------------------
+  Variance Reduction Factor: 0.00x
+  Simulazioni MC equivalenti: 0
+  Differenza stime: 1.207352e-08
+  Rapporto stime (IS/MC): inf
+
+VALUTAZIONE:
+----------------------------------------
+  ✗ IS non migliora rispetto a MC naive
+  ⚠ Stime discordanti (rapporto: inf)
+============================================================
