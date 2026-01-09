@@ -1,26 +1,29 @@
 ============================================================
-VALUTAZIONE FINALE - 2SU3
+VALUTAZIONE FINALE - DEEP_AND_6
 ============================================================
-Data: 2026-01-07 15:02:55
-Simulazioni: 50000
+Data: 2026-01-09 14:06:24
+Simulazioni: 10000
 
 PARAMETRI OTTIMIZZATI:
 ----------------------------------------
-  A: alpha=2.0497, beta=0.4934
-  B: alpha=2.0038, beta=0.5076
-  C: alpha=2.0323, beta=0.4935
+  C0: alpha=4.5275, beta=0.4896
+  C1: alpha=4.2216, beta=0.5046
+  C2: alpha=4.5840, beta=0.4969
+  C3: alpha=4.5167, beta=0.5002
+  C4: alpha=4.5951, beta=0.5074
+  C5: alpha=4.4550, beta=0.4990
 
 RISULTATI IMPORTANCE SAMPLING:
 ----------------------------------------
-  Top events: 1/50000 (0.00%)
-  Stima probabilità: 1.207352e-08
-  Errore standard: 1.207340e-08
-  Coefficiente di variazione: 1.0000
-  IC 95%: [0.000000e+00, 3.573737e-08]
+  Top events: 43/10000 (0.43%)
+  Stima probabilità: 5.395142e-09
+  Errore standard: 3.990746e-09
+  Coefficiente di variazione: 0.7397
+  IC 95%: [0.000000e+00, 1.321700e-08]
 
 RISULTATI MC NAIVE:
 ----------------------------------------
-  Top events: 0/50000 (0.00%)
+  Top events: 0/10000 (0.00%)
   Stima probabilità: 0.000000e+00
   Errore standard: 0.000000e+00
   Coefficiente di variazione: inf
@@ -29,11 +32,11 @@ CONFRONTO IS VS MC:
 ----------------------------------------
   Variance Reduction Factor: 0.00x
   Simulazioni MC equivalenti: 0
-  Differenza stime: 1.207352e-08
+  Differenza stime: 5.395142e-09
   Rapporto stime (IS/MC): inf
 
 VALUTAZIONE:
 ----------------------------------------
-  ✗ IS non migliora rispetto a MC naive
+  ✓ Numero di campioni insufficienti per MC naive
   ⚠ Stime discordanti (rapporto: inf)
 ============================================================

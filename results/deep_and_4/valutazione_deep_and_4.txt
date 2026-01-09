@@ -1,0 +1,40 @@
+============================================================
+VALUTAZIONE FINALE - DEEP_AND_4
+============================================================
+Data: 2026-01-09 13:44:03
+Simulazioni: 10000
+
+PARAMETRI OTTIMIZZATI:
+----------------------------------------
+  C0: alpha=6.1040, beta=0.6528
+  C1: alpha=5.9171, beta=0.6596
+  C2: alpha=6.0196, beta=0.6439
+  C3: alpha=5.9356, beta=0.6631
+
+RISULTATI IMPORTANCE SAMPLING:
+----------------------------------------
+  Top events: 619/10000 (6.19%)
+  Stima probabilità: 3.594641e-05
+  Errore standard: 1.287995e-05
+  Coefficiente di variazione: 0.3583
+  IC 95%: [1.070170e-05, 6.119112e-05]
+
+RISULTATI MC NAIVE:
+----------------------------------------
+  Top events: 0/10000 (0.00%)
+  Stima probabilità: 0.000000e+00
+  Errore standard: 0.000000e+00
+  Coefficiente di variazione: inf
+
+CONFRONTO IS VS MC:
+----------------------------------------
+  Variance Reduction Factor: 0.00x
+  Simulazioni MC equivalenti: 0
+  Differenza stime: 3.594641e-05
+  Rapporto stime (IS/MC): inf
+
+VALUTAZIONE:
+----------------------------------------
+  ✓ Numero di campioni insufficienti per MC naive
+  ⚠ Stime discordanti (rapporto: inf)
+============================================================

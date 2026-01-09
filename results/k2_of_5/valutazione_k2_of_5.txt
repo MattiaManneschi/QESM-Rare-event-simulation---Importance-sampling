@@ -1,0 +1,41 @@
+============================================================
+VALUTAZIONE FINALE - K2_OF_5
+============================================================
+Data: 2026-01-09 09:43:18
+Simulazioni: 500
+
+PARAMETRI OTTIMIZZATI:
+----------------------------------------
+  C0: alpha=1.9435, beta=0.6584
+  C1: alpha=2.0046, beta=0.6609
+  C2: alpha=1.9980, beta=0.6653
+  C3: alpha=1.9324, beta=0.6246
+  C4: alpha=2.0729, beta=0.6829
+
+RISULTATI IMPORTANCE SAMPLING:
+----------------------------------------
+  Top events: 46/500 (9.20%)
+  Stima probabilità: 1.606949e-02
+  Errore standard: 3.021964e-03
+  Coefficiente di variazione: 0.1881
+  IC 95%: [1.014644e-02, 2.199254e-02]
+
+RISULTATI MC NAIVE:
+----------------------------------------
+  Top events: 8/500 (1.60%)
+  Stima probabilità: 1.600000e-02
+  Errore standard: 5.611417e-03
+  Coefficiente di variazione: 0.3507
+
+CONFRONTO IS VS MC:
+----------------------------------------
+  Variance Reduction Factor: 3.45x
+  Simulazioni MC equivalenti: 1724
+  Differenza stime: 6.949374e-05
+  Rapporto stime (IS/MC): 1.0043
+
+VALUTAZIONE:
+----------------------------------------
+  ✓ IS è 3.4x più efficiente di MC naive
+  ✓ Stime concordanti (differenza < 10%)
+============================================================

@@ -124,68 +124,147 @@ class DiagnosticLogger:
             print(f"  Std: {last_w['std']:.6e}")
             print(f"  Range: [{last_w['min']:.6e}, {last_w['max']:.6e}]")
 
-        if extra_info:
-            print(f"\nInfo aggiuntive:")
-            for k, v in extra_info.items():
-                print(f"  {k}: {v}")
-
 class OptimizedConfig:
 
-    def __init__(self):
-        self.learning_rate = 0.01
+    PRESETS = {
+        "easy": "~10^-2",
+        "medium": "~10^-4",
+        "hard": "~10^-6",
+        "very_hard": "~10^-9",
+        "custom": "definito da utente",
+    }
 
-        self.n_trajectories = 1000
-
-        self.n_samples = 200
-
-        self.epochs = 50
-
+    def __init__(self, preset="easy", T=100):
         self.rho = 0.15
-
         self.alpha_std = 0.3
         self.beta_std = 0.05
-
-        self.alpha_min = 1.5
-        self.alpha_max = 2.5
-        self.beta_min = 0.4
-        self.beta_max = 0.6
-
         self.max_grad_norm = 0.5
-
         self.entropy_coef = 0.01
+        self.learning_rate = 0.005
 
-def fault_tree(state):
+        self.T = T
+        self.preset = preset
 
-    #generic
+        self._set_difficulty_params(preset)
 
-    return (state["A"] == 1 and state["B"] == 1) or (state["C"] == 1)
+        self._generate_fault_tree(preset)
 
-    """"#2oo3
+    def _set_difficulty_params(self, preset):
 
-    a, b, c = state["A"], state["B"], state["C"]
-    return (a == 1 and b == 1) or (a == 1 and c == 1) or (b == 1 and c == 1) """
+        # FACILE: P ~ 10^-2
+        if preset == "easy":
+            self.alpha_min = 1.0
+            self.alpha_max = 3.0
+            self.beta_min = 0.3
+            self.beta_max = 1.0
+            self.n_trajectories = 500
+            self.n_samples = 500
+            self.epochs = 30
 
-    """"#bridge
+        # MEDIO: P ~ 10^-4
+        elif preset == "medium":
+            self.alpha_min = 10.0
+            self.alpha_max = 30.0
+            self.beta_min = 0.3
+            self.beta_max = 1.0
+            self.n_trajectories = 500
+            self.n_samples = 500
+            self.epochs = 30
 
-    sub_system = (state["A"] == 1 or state["B"] == 1) and (state["C"] == 1 or state["D"] == 1)
-    critical_node = (state["E"] == 1)
-    return sub_system or critical_node """
+        # DIFFICILE: P ~ 10^-5
+        elif preset in ["hard"]:
+            self.alpha_min = 2.0
+            self.alpha_max = 10.0
+            self.beta_min = 0.3
+            self.beta_max = 1.0
+            self.n_trajectories = 500
+            self.n_samples = 500
+            self.epochs = 30
 
-    """"#spof
+        # MOLTO DIFFICILE: P ~ 10^-9
+        elif preset in ["very_hard"]:
+            self.alpha_min = 2.0
+            self.alpha_max = 7.0
+            self.beta_min = 0.3
+            self.beta_max = 0.7
+            self.n_trajectories = 500
+            self.n_samples = 500
+            self.epochs = 30
 
-    power_fail = (state["A"] == 1)
-    cooling_fail = (state["B"] == 1)
-    server_cluster_fail = (state["C"] == 1 and state["D"] == 1 and state["E"] == 1)
-    return power_fail or cooling_fail or server_cluster_fail """
+    def _generate_fault_tree(self, preset):
 
-def simulate_CTMC(lambda_, mu_, alpha, beta, T, debug=False):
+        if preset == "easy":
+            self._setup_k_out_of_n(5, 2, base_lambda=1e-3)
+        elif preset == "medium":
+            self._setup_hierarchical(2, 2, "OR", "OR", base_lambda=1e-6)
+        elif preset == "hard":
+            self._setup_deep_and(4, base_lambda=3e-3)
+        elif preset == "very_hard":
+            self._setup_deep_and(6, base_lambda=3e-3)
+        else:
+            raise ValueError(f"Preset '{preset}' non trovato. Disponibili: {list(self.PRESETS.keys())}")
+
+
+    def _setup_deep_and(self, n_components, base_lambda, base_mu=0.1):
+        self.tree_type = f"deep_and_{n_components}"
+        components = [f"C{i}" for i in range(n_components)]
+
+        self.lambda_ = {c: base_lambda * (1 + 0.1 * i) for i, c in enumerate(components)}
+        self.mu_ = {c: base_mu for c in components}
+
+        def fault_tree(state):
+            return all(state[c] == 1 for c in components)
+
+        self.fault_tree = fault_tree
+
+    def _setup_k_out_of_n(self, n, k, base_lambda, base_mu=0.1):
+        self.tree_type = f"k{k}_of_{n}"
+        components = [f"C{i}" for i in range(n)]
+
+        self.lambda_ = {c: base_lambda for c in components}
+        self.mu_ = {c: base_mu for c in components}
+
+        def fault_tree(state):
+            failed = sum(1 for c in components if state[c] == 1)
+            return failed >= k
+
+        self.fault_tree = fault_tree
+
+    def _setup_hierarchical(self, n_subs, comp_per_sub, sub_logic, top_logic, base_lambda, base_mu=0.1):
+        self.tree_type = f"hier_{n_subs}x{comp_per_sub}"
+
+        subsystems = {}
+        all_components = []
+        for i in range(n_subs):
+            prefix = chr(65 + i)
+            subsystems[prefix] = [f"{prefix}{j}" for j in range(comp_per_sub)]
+            all_components.extend(subsystems[prefix])
+
+        self.lambda_ = {c: base_lambda for c in all_components}
+        self.mu_ = {c: base_mu for c in all_components}
+
+        def fault_tree(state):
+            sub_states = []
+            for prefix, comps in subsystems.items():
+                if sub_logic == "AND":
+                    sub_failed = all(state[c] == 1 for c in comps)
+                else:
+                    sub_failed = any(state[c] == 1 for c in comps)
+                sub_states.append(sub_failed)
+
+            if top_logic == "AND":
+                return all(sub_states)
+            else:
+                return any(sub_states)
+
+        self.fault_tree = fault_tree
+
+def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
     t = 0.0
     state = {i: 0 for i in lambda_}
     log_w = 0.0
     top_event_hit = False
     n_transitions = 0
-
-    debug_info = [] if debug else None
 
     while t < T:
         rates_orig = {}
@@ -222,17 +301,7 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, debug=False):
         rate_orig_chosen = rates_orig[chosen_comp]
         rate_is_chosen = rates_is[chosen_comp]
 
-        log_w += math.log((rate_orig_chosen / R_orig) / (rate_is_chosen / R_is))
-
-        if debug:
-            debug_info.append({
-                't': t,
-                'comp': chosen_comp,
-                'state_before': state[chosen_comp],
-                'log_w': log_w,
-                'R_orig': R_orig,
-                'R_is': R_is
-            })
+        log_w += math.log(rate_orig_chosen / rate_is_chosen)
 
         state[chosen_comp] = 1 - state[chosen_comp]
 
@@ -246,15 +315,13 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, debug=False):
         "final_state": dict(state)
     }
 
-    if debug:
-        result["debug"] = debug_info
-
     return result
 
-def train_mlp_cross_entropy(lambda_, mu_, T, config=None):
+def train_mlp_cross_entropy(config):
 
-    if config is None:
-        config = OptimizedConfig()
+    lambda_ = config.lambda_
+    mu_ = config.mu_
+    T = config.T
 
     n = len(lambda_)
     comps = list(lambda_.keys())
@@ -272,9 +339,6 @@ def train_mlp_cross_entropy(lambda_, mu_, T, config=None):
 
     input_tensor = torch.eye(n).mean(dim=0).unsqueeze(0).to(device)
 
-    print("\n" + "="*60)
-    print("INIZIO TRAINING")
-    print("="*60)
     print(f"Configurazione:")
     print(f"  Learning rate: {config.learning_rate}")
     print(f"  Epochs: {config.epochs}")
@@ -306,7 +370,7 @@ def train_mlp_cross_entropy(lambda_, mu_, T, config=None):
                                       config.beta_max).item()
                       for i, c in enumerate(comps)}
 
-            trajs = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T)
+            trajs = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T, config.fault_tree)
                      for _ in range(config.n_trajectories)]
 
             traj_logs = [tr["log_w"] for tr in trajs if tr["top"]]
@@ -376,7 +440,7 @@ def train_mlp_cross_entropy(lambda_, mu_, T, config=None):
             current_prob = np.mean([w for w in all_weights_epoch if w > 0]) if any(w > 0 for w in all_weights_epoch) else 0
             prob_estimates.append(current_prob)
 
-            if epoch % 10 == 0:
+            if epoch % 5 == 0:
                 a_dict = {c: alpha_mu[0, i].item() for i, c in enumerate(comps)}
                 b_dict = {c: beta_mu[0, i].item() for i, c in enumerate(comps)}
 
@@ -399,10 +463,14 @@ def train_mlp_cross_entropy(lambda_, mu_, T, config=None):
 
     return model, loss_hist, alpha_hist, beta_hist, prob_estimates, logger
 
-def evaluate_model(model, lambda_, mu_, T, N_eval=50000):
+def evaluate_model(model, config, N_eval=10000):
     print("\n" + "=" * 60)
     print("VALUTAZIONE FINALE")
     print("=" * 60)
+
+    lambda_ = config.lambda_
+    mu_ = config.mu_
+    T = config.T
 
     comps = list(lambda_.keys())
     input_tensor = torch.eye(len(lambda_)).mean(dim=0).unsqueeze(0).to(device)
@@ -418,7 +486,7 @@ def evaluate_model(model, lambda_, mu_, T, N_eval=50000):
         print(f"  {c}: alpha={a_f[c]:.4f}, beta={b_f[c]:.4f}")
 
     print(f"\nSimulando {N_eval} traiettorie...")
-    results = [simulate_CTMC(lambda_, mu_, a_f, b_f, T)
+    results = [simulate_CTMC(lambda_, mu_, a_f, b_f, T, config.fault_tree)
                for _ in range(N_eval)]
 
     n_top = sum(1 for r in results if r['top'])
@@ -443,7 +511,7 @@ def evaluate_model(model, lambda_, mu_, T, N_eval=50000):
     print("\n=== CONFRONTO IS VS MC ===")
     naive_results = [simulate_CTMC(lambda_, mu_,
                                              {c: 1.0 for c in comps},
-                                             {c: 1.0 for c in comps}, T)
+                                             {c: 1.0 for c in comps}, T, config.fault_tree)
                      for _ in range(N_eval)]
     n_top_naive = sum(1 for r in naive_results if r['top'])
     p_naive = n_top_naive / N_eval
@@ -484,7 +552,6 @@ def evaluate_model(model, lambda_, mu_, T, N_eval=50000):
         p_naive=p_naive,
         n_top_naive=n_top_naive,
         N_eval=N_eval,
-        var_naive=var_naive,
         std_naive=std_naive,
         cv_naive=cv_naive,
         var_reduction=var_reduction,
@@ -527,7 +594,6 @@ def plot_results_extended(loss_hist, alpha_hist, beta_hist, prob_estimates, tree
     axes[0, 0].set_ylabel("Valore Alpha")
     axes[0, 0].legend(loc='best')
     axes[0, 0].grid(True, linestyle='--', alpha=0.5)
-    axes[0, 0].axhline(y=1.0, color='gray', linestyle=':', label='No modifica')
 
     for comp, values in beta_hist.items():
         axes[0, 1].plot(epochs, values, label=f"β_{comp}", linestyle='--', linewidth=1.5)
@@ -535,25 +601,22 @@ def plot_results_extended(loss_hist, alpha_hist, beta_hist, prob_estimates, tree
     axes[0, 1].set_ylabel("Valore Beta")
     axes[0, 1].legend(loc='best')
     axes[0, 1].grid(True, linestyle='--', alpha=0.5)
-    axes[0, 1].axhline(y=1.0, color='gray', linestyle=':', label='No modifica')
 
     final_alphas = {c: vals[-1] for c, vals in alpha_hist.items()}
     axes[1, 0].bar(final_alphas.keys(), final_alphas.values(), color='steelblue')
     axes[1, 0].set_title("Alpha finali")
     axes[1, 0].set_ylabel("Valore")
-    axes[1, 0].axhline(y=1.0, color='red', linestyle='--', label='Baseline')
 
     final_betas = {c: vals[-1] for c, vals in beta_hist.items()}
     axes[1, 1].bar(final_betas.keys(), final_betas.values(), color='coral')
     axes[1, 1].set_title("Beta finali")
     axes[1, 1].set_ylabel("Valore")
-    axes[1, 1].axhline(y=1.0, color='red', linestyle='--', label='Baseline')
 
     plt.tight_layout()
     plt.savefig(f"{output_dir}/andamento_parametri.png", dpi=300)
     plt.close()
 
-def save_results_to_file(tree_type, eval_results, p_naive, n_top_naive, N_eval, var_naive, std_naive, cv_naive, var_reduction, equivalent_mc_samples):
+def save_results_to_file(tree_type, eval_results, p_naive, n_top_naive, N_eval, std_naive, cv_naive, var_reduction, equivalent_mc_samples):
     output_dir = f"results/{tree_type}"
     os.makedirs(output_dir, exist_ok=True)
 
@@ -619,20 +682,14 @@ def save_results_to_file(tree_type, eval_results, p_naive, n_top_naive, N_eval, 
 
 if __name__ == "__main__":
 
-    lambda_ = {"A": 1e-5, "B": 2e-5, "C": 1e-6}
-    mu_ = {"A": 1e-1, "B": 1e-1, "C": 1e-1}
+    config = OptimizedConfig(preset = "very_hard")
 
-    #lambda_ = {"A": 1e-5, "B": 2e-5, "C": 1e-6, "D": 1e-7, "E": 1e-8}
-    #mu_ = {"A": 1e-1, "B": 1e-1, "C": 1e-1, "D": 1e-1, "E": 1e-2}
+    lambda_ = config.lambda_
+    mu_ = config.mu_
+    tree_type = config.tree_type
+    faul_tree = config.fault_tree
+    T = config.T
 
-    T = 1e3
-
-    tree_type = "generic"
-    #tree_type = "2su3"
-    #tree_type = "bridge"
-    #tree_type = "spof"
-
-    config = OptimizedConfig()
 
     print("=" * 60)
     print("IMPORTANCE SAMPLING PER FAULT TREE CON CTMC")
@@ -650,9 +707,9 @@ if __name__ == "__main__":
     print("TRAINING")
     print("=" * 60)
 
-    trained_model, loss_hist, alpha_hist, beta_hist, prob_estimates, logger = train_mlp_cross_entropy(lambda_, mu_, T, config)
+    trained_model, loss_hist, alpha_hist, beta_hist, prob_estimates, logger = train_mlp_cross_entropy(config)
 
-    evaluate_model(trained_model, lambda_, mu_, T)
+    evaluate_model(trained_model, config)
 
     plot_results_extended(loss_hist, alpha_hist, beta_hist, prob_estimates, tree_type)
 
