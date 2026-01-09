@@ -4,12 +4,12 @@ Rare event simulation in Fault Tree Analysis using adaptive Importance Sampling,
 
 ## Preset Configurations
 
-| Preset | Structure | P estimated | Alpha range |
-|--------|-----------|-------------|-------------|
-| `medium` | Hierarchical OR-OR | ~10⁻⁴ | [5, 30] |
-| `hard` | Deep AND (4 comp) | ~10⁻⁵ | [2, 10] |
-| `very_hard` | Deep AND (6 comp) | ~10⁻⁸ | [2, 5] |
-| `extreme` | Deep AND (8 comp) | ~10⁻¹¹ | [1.5, 4] |
+| Preset | Structure | P estimated |
+|--------|-----------|-------------|
+| 'easy' | 2_of_5 | ~10⁻² |
+| `medium` | Hierarchical OR-OR | ~10⁻⁴ | 
+| `hard` | Deep AND (4 comp) | ~10⁻⁵ |
+| `very_hard` | Deep AND (6 comp) | ~10⁻⁹ |
 
 ## Main Functions
 
