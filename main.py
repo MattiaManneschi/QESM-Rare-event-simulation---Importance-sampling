@@ -283,7 +283,7 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
     n_transitions = 0
 
     while t < T:
-        # Calcola i tassi originali e biased per ogni componente
+        # Calcola i tassi di transizione originali e biased per ogni componente
         rates_orig = {}
         rates_is = {}
 
@@ -346,18 +346,19 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
 
 def train_mlp_cross_entropy(config):
     """
-        Simula una traiettoria CTMC con Importance Sampling.
+    Training con Cross-Entropy Method + Policy Gradient.
 
-        Il likelihood ratio (log_w) tiene traccia della differenza tra:
-        - Distribuzione originale (lambda_, mu_)
-        - Distribuzione biased (lambda_*alpha, mu_*beta)
+    L'idea è:
+    1. La rete predice μ_alpha, μ_beta (medie delle distribuzioni)
+    2. Campioniamo alpha, beta aggiungendo rumore: alpha ~ N(μ_alpha, sigma)
+    3. Simuliamo traiettorie CTMC con questi parametri
+    4. Selezioniamo le "elite" (top rho% per performance)
+    5. Aggiorniamo la rete per aumentare la probabilità degli elite
 
-        Formula del likelihood ratio per CTMC:
-        - Holding time: log_w += (R_is - R_orig) * dt
-        - Scelta transizione: log_w += log(P_orig / P_is)
+    La loss è policy gradient: -Σ weight_i * log π(alpha_i, beta_i | θ)
+    dove weight_i indica quanto è buono il campione i.
 
-        Alla fine: weight = exp(log_w) corregge il bias introdotto.
-        """
+    Questo bypassa la non-differenziabilità della simulazione CTMC. """
 
     lambda_ = config.lambda_
     mu_ = config.mu_
