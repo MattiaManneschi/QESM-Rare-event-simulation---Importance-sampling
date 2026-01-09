@@ -25,9 +25,10 @@ class AlphaBetaMLP(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, n_components * 2)
+            nn.Linear(64, n_components * 2) # Output: alpha e beta per ogni componente
         )
 
+        # Inizializzazione conservativa dei pesi per partire da valori centrali
         for m in self.net.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight, gain=0.5)
@@ -37,8 +38,9 @@ class AlphaBetaMLP(nn.Module):
         out = self.net(x)
         alpha_raw, beta_raw = torch.chunk(out, 2, dim=-1)
 
+        # Sigmoid mappa in [0,1], poi scaliamo nel range desiderato
+        # Con bias=0 iniziale: sigmoid(0)=0.5 → valore centrale del range
         alpha = torch.sigmoid(alpha_raw) * (self.config.alpha_max - self.config.alpha_min) + self.config.alpha_min
-
         beta = torch.sigmoid(beta_raw) * (self.config.beta_max - self.config.beta_min) + self.config.beta_min
 
         return alpha, beta
@@ -260,40 +262,62 @@ class OptimizedConfig:
         self.fault_tree = fault_tree
 
 def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
+    """
+        Simula una traiettoria CTMC con Importance Sampling.
+
+        Il likelihood ratio (log_w) tiene traccia della differenza tra:
+        - Distribuzione originale (lambda_, mu_)
+        - Distribuzione biased (lambda_*alpha, mu_*beta)
+
+        Formula del likelihood ratio per CTMC:
+        - Holding time: log_w += (R_is - R_orig) * dt
+        - Scelta transizione: log_w += log(P_orig / P_is)
+
+        Alla fine: weight = exp(log_w) corregge il bias introdotto.
+        """
+
     t = 0.0
-    state = {i: 0 for i in lambda_}
+    state = {i: 0 for i in lambda_} # Tutti i componenti partono funzionanti (0)
     log_w = 0.0
     top_event_hit = False
     n_transitions = 0
 
     while t < T:
+        # Calcola i tassi originali e biased per ogni componente
         rates_orig = {}
         rates_is = {}
 
         for i in lambda_:
-            if state[i] == 0:
+            if state[i] == 0: # Componente funzionante → può guastarsi
                 rates_orig[i] = lambda_[i]
-                rates_is[i] = lambda_[i] * alpha[i]
-            else:
+                rates_is[i] = lambda_[i] * alpha[i] # Accelera guasti
+            else: # Componente guasto → può essere riparato
                 rates_orig[i] = mu_[i]
-                rates_is[i] = mu_[i] * beta[i]
+                rates_is[i] = mu_[i] * beta[i]  # Rallenta riparazioni
 
-        R_orig = sum(rates_orig.values())
-        R_is = sum(rates_is.values())
+        R_orig = sum(rates_orig.values()) # Tasso totale originale
+        R_is = sum(rates_is.values()) # Tasso totale IS
 
         if R_is <= 0:
             break
 
+        # Tempo di holding: esponenziale con rate R_is
         dt = random.expovariate(R_is)
 
         if t + dt > T:
+            # Correzione per il tempo residuo fino a T
             log_w += (R_is - R_orig) * (T - t)
             break
 
+        # Aggiorna likelihood ratio per il tempo di holding
+        # P(dt|orig) / P(dt|IS) = (R_orig * exp(-R_orig*dt)) / (R_is * exp(-R_is*dt))
+        # log di questo = log(R_orig/R_is) + (R_is - R_orig)*dt
+        # Ma la parte log(R_orig/R_is) si compensa con la scelta della transizione
         log_w += (R_is - R_orig) * dt
         t += dt
         n_transitions += 1
 
+        # Scelta del componente che transisce (proporzionale ai tassi IS)
         comps = list(lambda_.keys())
         p_is = [rates_is[c] / R_is for c in comps]
         chosen_comp = random.choices(comps, weights=p_is)[0]
@@ -301,8 +325,11 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
         rate_orig_chosen = rates_orig[chosen_comp]
         rate_is_chosen = rates_is[chosen_comp]
 
+        # Correzione per la scelta della transizione
+        # P(scegliere c | orig) / P(scegliere c | IS)
         log_w += math.log(rate_orig_chosen / rate_is_chosen)
 
+        # Esegui la transizione (toggle dello stato)
         state[chosen_comp] = 1 - state[chosen_comp]
 
         if fault_tree(state):
@@ -318,6 +345,19 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
     return result
 
 def train_mlp_cross_entropy(config):
+    """
+        Simula una traiettoria CTMC con Importance Sampling.
+
+        Il likelihood ratio (log_w) tiene traccia della differenza tra:
+        - Distribuzione originale (lambda_, mu_)
+        - Distribuzione biased (lambda_*alpha, mu_*beta)
+
+        Formula del likelihood ratio per CTMC:
+        - Holding time: log_w += (R_is - R_orig) * dt
+        - Scelta transizione: log_w += log(P_orig / P_is)
+
+        Alla fine: weight = exp(log_w) corregge il bias introdotto.
+        """
 
     lambda_ = config.lambda_
     mu_ = config.mu_
@@ -337,6 +377,7 @@ def train_mlp_cross_entropy(config):
     loss_hist = []
     prob_estimates = []
 
+    # Input fittizio per la rete (media degli one-hot vectors)
     input_tensor = torch.eye(n).mean(dim=0).unsqueeze(0).to(device)
 
     print(f"Configurazione:")
@@ -348,16 +389,20 @@ def train_mlp_cross_entropy(config):
     print("="*60 + "\n")
 
     for epoch in range(config.epochs):
+        # La rete predice le medie delle distribuzioni
         alpha_mu, beta_mu = model(input_tensor)
 
         samples_data = []
         log_performances = []
         all_weights_epoch = []
 
+        # Campiona n_samples configurazioni di parametri
         for s in range(config.n_samples):
+            # Crea distribuzioni normali centrate sui valori predetti
             dist_a = torch.distributions.Normal(alpha_mu, config.alpha_std)
             dist_b = torch.distributions.Normal(beta_mu, config.beta_std)
 
+            # Campiona e clampa nei range validi
             a_sampled = dist_a.sample()
             b_sampled = dist_b.sample()
 
@@ -370,21 +415,25 @@ def train_mlp_cross_entropy(config):
                                       config.beta_max).item()
                       for i, c in enumerate(comps)}
 
+            # Simula traiettorie con questi parametri
             trajs = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T, config.fault_tree)
                      for _ in range(config.n_trajectories)]
 
+            # Raccogli i log-weights delle traiettorie che hanno raggiunto il top event
             traj_logs = [tr["log_w"] for tr in trajs if tr["top"]]
 
             weights = [math.exp(tr["log_w"]) if tr["top"] else 0.0 for tr in trajs]
             all_weights_epoch.extend(weights)
 
+            # Calcola la performance del campione (log-sum-exp per stabilità numerica)
+            # Performance = media dei pesi IS = stima della probabilità
             if traj_logs:
                 m_log = max(traj_logs)
                 lse = m_log + math.log(sum(math.exp(lw - m_log) for lw in traj_logs))
                 log_perf = lse - math.log(config.n_trajectories)
                 log_performances.append(log_perf)
             else:
-                log_performances.append(-1e10)
+                log_performances.append(-1e10) # Penalità se nessun top event
 
             samples_data.append({
                 'a_sampled': a_sampled,
@@ -398,6 +447,7 @@ def train_mlp_cross_entropy(config):
 
         logger.log_weights(all_weights_epoch, epoch)
 
+        # Cross-Entropy Method: seleziona il top rho% come "elite"
         sorted_idx = sorted(range(len(log_performances)),
                             key=lambda i: log_performances[i], reverse=True)
         n_elite = max(1, int(config.rho * config.n_samples))
@@ -408,19 +458,24 @@ def train_mlp_cross_entropy(config):
             elite_logs = torch.tensor([log_performances[i] for i in elite_indices],
                                       device=device)
 
+            # Pesi softmax per dare più importanza agli elite migliori
             with torch.no_grad():
                 shifted_logs = elite_logs - torch.max(elite_logs)
                 weights = torch.softmax(shifted_logs, dim=0)
 
+            # Policy Gradient Loss: aumenta la probabilità degli elite
+            # loss = -Σ weight_i * log π(params_i | θ)
             policy_loss = 0.0
             entropy_bonus = 0.0
 
             for i, idx in enumerate(elite_indices):
                 sample = samples_data[idx]
+                # log π(alpha, beta | θ) = log_prob della distribuzione normale
                 log_p_a = sample['dist_a'].log_prob(sample['a_sampled']).sum()
                 log_p_b = sample['dist_b'].log_prob(sample['b_sampled']).sum()
                 policy_loss -= weights[i] * (log_p_a + log_p_b)
 
+                # Entropy bonus per incoraggiare l'esplorazione
                 entropy_bonus += sample['dist_a'].entropy().sum()
                 entropy_bonus += sample['dist_b'].entropy().sum()
 
