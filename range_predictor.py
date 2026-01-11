@@ -92,77 +92,171 @@ class FaultTreeGraph:
 
 def generate_simple_fault_tree():
     """
-    Genera fault tree semplici con P ~ 10^-1 o 10^-2.
+    Genera fault tree con varietà strutturale (P ~ 10^-1 / 10^-2).
+
+    Strutture:
+    - OR_2, OR_3, OR_4, OR_5: semplici OR
+    - AND_2, AND_3, AND_4, AND_5: semplici AND (richiedono α diversi!)
+    - 2oo3, 2oo4, 3oo5: voting
+    - mixed_*: combinazioni AND/OR
+    - hierarchical_*: strutture gerarchiche
     """
 
     base_mu = 0.1
-    ratio = random.uniform(0.05, 0.15)
+
+    # Varia λ/μ per avere P diverse
+    ratio = random.uniform(0.05, 0.20)
     base_lambda = base_mu * ratio
 
     def vary(val):
         return val * random.uniform(0.8, 1.2)
 
-    structure_type = random.choice(['OR_2', 'OR_3', 'AND_2', 'AND_3', '2oo3', 'mixed'])
+    def add_n_components(graph, n, prefix='C'):
+        """Aggiunge n componenti e ritorna gli indici."""
+        return [graph.add_component(f'{prefix}{i}', vary(base_lambda), vary(base_mu))
+                for i in range(n)]
 
+    # Scegli tipo di struttura con pesi
+    structure_types = [
+        # OR semplici (peso basso - facili)
+        'OR_2', 'OR_3', 'OR_4', 'OR_5',
+        # AND semplici (peso alto - interessanti per α)
+        'AND_2', 'AND_2', 'AND_3', 'AND_3', 'AND_4', 'AND_5',
+        # Voting
+        '2oo3', '2oo4', '3oo5',
+        # Mixed
+        'mixed_AND_OR', 'mixed_OR_AND', 'mixed_complex',
+        # Gerarchici
+        'hier_AND_AND', 'hier_OR_OR', 'hier_AND_OR', 'hier_OR_AND'
+    ]
+
+    structure_type = random.choice(structure_types)
     graph = FaultTreeGraph()
 
+    # -------------------------------------------------------------------------
+    # OR semplici
+    # -------------------------------------------------------------------------
     if structure_type == 'OR_2':
-        idx_A = graph.add_component('A', vary(base_lambda), vary(base_mu))
-        idx_B = graph.add_component('B', vary(base_lambda), vary(base_mu))
-        graph.add_gate('OR', [idx_A, idx_B])
-
-        def fault_tree(state):
-            return state['A'] == 1 or state['B'] == 1
+        nodes = add_n_components(graph, 2)
+        graph.add_gate('OR', nodes)
 
     elif structure_type == 'OR_3':
-        idx_A = graph.add_component('A', vary(base_lambda), vary(base_mu))
-        idx_B = graph.add_component('B', vary(base_lambda), vary(base_mu))
-        idx_C = graph.add_component('C', vary(base_lambda), vary(base_mu))
-        graph.add_gate('OR', [idx_A, idx_B, idx_C])
+        nodes = add_n_components(graph, 3)
+        graph.add_gate('OR', nodes)
 
-        def fault_tree(state):
-            return state['A'] == 1 or state['B'] == 1 or state['C'] == 1
+    elif structure_type == 'OR_4':
+        nodes = add_n_components(graph, 4)
+        graph.add_gate('OR', nodes)
 
+    elif structure_type == 'OR_5':
+        nodes = add_n_components(graph, 5)
+        graph.add_gate('OR', nodes)
+
+    # -------------------------------------------------------------------------
+    # AND semplici (richiedono α diversi in base a n!)
+    # -------------------------------------------------------------------------
     elif structure_type == 'AND_2':
-        idx_A = graph.add_component('A', vary(base_lambda), vary(base_mu))
-        idx_B = graph.add_component('B', vary(base_lambda), vary(base_mu))
-        graph.add_gate('AND', [idx_A, idx_B])
-
-        def fault_tree(state):
-            return state['A'] == 1 and state['B'] == 1
+        nodes = add_n_components(graph, 2)
+        graph.add_gate('AND', nodes)
 
     elif structure_type == 'AND_3':
-        idx_A = graph.add_component('A', vary(base_lambda), vary(base_mu))
-        idx_B = graph.add_component('B', vary(base_lambda), vary(base_mu))
-        idx_C = graph.add_component('C', vary(base_lambda), vary(base_mu))
-        graph.add_gate('AND', [idx_A, idx_B, idx_C])
+        nodes = add_n_components(graph, 3)
+        graph.add_gate('AND', nodes)
 
-        def fault_tree(state):
-            return state['A'] == 1 and state['B'] == 1 and state['C'] == 1
+    elif structure_type == 'AND_4':
+        nodes = add_n_components(graph, 4)
+        graph.add_gate('AND', nodes)
 
+    elif structure_type == 'AND_5':
+        nodes = add_n_components(graph, 5)
+        graph.add_gate('AND', nodes)
+
+    # -------------------------------------------------------------------------
+    # Voting (k-out-of-n)
+    # -------------------------------------------------------------------------
     elif structure_type == '2oo3':
-        idx_A = graph.add_component('A', vary(base_lambda), vary(base_mu))
-        idx_B = graph.add_component('B', vary(base_lambda), vary(base_mu))
-        idx_C = graph.add_component('C', vary(base_lambda), vary(base_mu))
-        idx_AB = graph.add_gate('AND', [idx_A, idx_B])
-        idx_AC = graph.add_gate('AND', [idx_A, idx_C])
-        idx_BC = graph.add_gate('AND', [idx_B, idx_C])
-        graph.add_gate('OR', [idx_AB, idx_AC, idx_BC])
+        # 2 su 3: (A∧B) ∨ (A∧C) ∨ (B∧C)
+        nodes = add_n_components(graph, 3)
+        and_01 = graph.add_gate('AND', [nodes[0], nodes[1]])
+        and_02 = graph.add_gate('AND', [nodes[0], nodes[2]])
+        and_12 = graph.add_gate('AND', [nodes[1], nodes[2]])
+        graph.add_gate('OR', [and_01, and_02, and_12])
 
-        def fault_tree(state):
-            return state['A'] + state['B'] + state['C'] >= 2
+    elif structure_type == '2oo4':
+        # 2 su 4
+        nodes = add_n_components(graph, 4)
+        ands = []
+        for i in range(4):
+            for j in range(i + 1, 4):
+                ands.append(graph.add_gate('AND', [nodes[i], nodes[j]]))
+        graph.add_gate('OR', ands)
 
-    else:  # mixed: (A ∧ B) ∨ C
-        idx_A = graph.add_component('A', vary(base_lambda), vary(base_mu))
-        idx_B = graph.add_component('B', vary(base_lambda), vary(base_mu))
-        idx_C = graph.add_component('C', vary(base_lambda), vary(base_mu))
-        idx_AND = graph.add_gate('AND', [idx_A, idx_B])
-        graph.add_gate('OR', [idx_AND, idx_C])
+    elif structure_type == '3oo5':
+        # 3 su 5 (semplificato: solo alcune combinazioni)
+        nodes = add_n_components(graph, 5)
+        ands = []
+        for i in range(5):
+            for j in range(i + 1, 5):
+                for k in range(j + 1, 5):
+                    ands.append(graph.add_gate('AND', [nodes[i], nodes[j], nodes[k]]))
+        graph.add_gate('OR', ands)
 
-        def fault_tree(state):
-            return (state['A'] == 1 and state['B'] == 1) or state['C'] == 1
+    # -------------------------------------------------------------------------
+    # Mixed: combinazioni AND/OR
+    # -------------------------------------------------------------------------
+    elif structure_type == 'mixed_AND_OR':
+        # (A ∧ B) ∨ C ∨ D
+        nodes = add_n_components(graph, 4)
+        and_gate = graph.add_gate('AND', [nodes[0], nodes[1]])
+        graph.add_gate('OR', [and_gate, nodes[2], nodes[3]])
+
+    elif structure_type == 'mixed_OR_AND':
+        # (A ∨ B) ∧ (C ∨ D)
+        nodes = add_n_components(graph, 4)
+        or1 = graph.add_gate('OR', [nodes[0], nodes[1]])
+        or2 = graph.add_gate('OR', [nodes[2], nodes[3]])
+        graph.add_gate('AND', [or1, or2])
+
+    elif structure_type == 'mixed_complex':
+        # (A ∧ B ∧ C) ∨ (D ∧ E)
+        nodes = add_n_components(graph, 5)
+        and1 = graph.add_gate('AND', [nodes[0], nodes[1], nodes[2]])
+        and2 = graph.add_gate('AND', [nodes[3], nodes[4]])
+        graph.add_gate('OR', [and1, and2])
+
+    # -------------------------------------------------------------------------
+    # Gerarchici: strutture a più livelli
+    # -------------------------------------------------------------------------
+    elif structure_type == 'hier_AND_AND':
+        # (A ∧ B) ∧ (C ∧ D) - profondità AND
+        nodes = add_n_components(graph, 4)
+        and1 = graph.add_gate('AND', [nodes[0], nodes[1]])
+        and2 = graph.add_gate('AND', [nodes[2], nodes[3]])
+        graph.add_gate('AND', [and1, and2])
+
+    elif structure_type == 'hier_OR_OR':
+        # (A ∨ B) ∨ (C ∨ D)
+        nodes = add_n_components(graph, 4)
+        or1 = graph.add_gate('OR', [nodes[0], nodes[1]])
+        or2 = graph.add_gate('OR', [nodes[2], nodes[3]])
+        graph.add_gate('OR', [or1, or2])
+
+    elif structure_type == 'hier_AND_OR':
+        # (A ∧ B) ∨ (C ∧ D) - AND sotto OR
+        nodes = add_n_components(graph, 4)
+        and1 = graph.add_gate('AND', [nodes[0], nodes[1]])
+        and2 = graph.add_gate('AND', [nodes[2], nodes[3]])
+        graph.add_gate('OR', [and1, and2])
+
+    elif structure_type == 'hier_OR_AND':
+        # (A ∨ B) ∧ (C ∨ D) - OR sotto AND
+        nodes = add_n_components(graph, 4)
+        or1 = graph.add_gate('OR', [nodes[0], nodes[1]])
+        or2 = graph.add_gate('OR', [nodes[2], nodes[3]])
+        graph.add_gate('AND', [or1, or2])
 
     lambda_, mu_ = graph.get_lambda_mu()
+    fault_tree = graph.get_logic_function()
 
     return {
         'graph': graph,
@@ -178,6 +272,8 @@ class RangePredictor(nn.Module):
 
     Input: grafo del fault tree con features [λ, μ, is_comp, is_AND, is_OR]
     Output: [alpha_min, alpha_max, beta_min, beta_max]
+
+    Usa features globali del grafo per catturare la struttura.
     """
 
     def __init__(self, node_features=5, hidden_dim=64, embedding_dim=32):
@@ -187,13 +283,38 @@ class RangePredictor(nn.Module):
         self.conv2 = GCNConv(hidden_dim, hidden_dim)
         self.conv3 = GCNConv(hidden_dim, embedding_dim)
 
+        # +6 per features globali: n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu
         self.predictor = nn.Sequential(
-            nn.Linear(embedding_dim, 32),
+            nn.Linear(embedding_dim + 6, 32),
             nn.ReLU(),
             nn.Linear(32, 4)
         )
 
         self.log_std = nn.Parameter(torch.zeros(4))
+
+    def compute_global_features(self, data):
+        """Calcola features globali del grafo."""
+        x = data.x
+
+        # Conta tipi di nodi
+        n_comp = x[:, 2].sum().item()  # is_component
+        n_AND = x[:, 3].sum().item()  # is_AND
+        n_OR = x[:, 4].sum().item()  # is_OR
+
+        # Media lambda e mu (solo componenti)
+        comp_mask = x[:, 2] == 1
+        if comp_mask.sum() > 0:
+            avg_lambda = x[comp_mask, 0].mean().item()
+            avg_mu = x[comp_mask, 1].mean().item()
+        else:
+            avg_lambda = 0
+            avg_mu = 0
+
+        # Profondità approssimata (numero di gate)
+        depth = n_AND + n_OR
+
+        return torch.tensor([[n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu]],
+                            dtype=torch.float, device=x.device)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -203,21 +324,28 @@ class RangePredictor(nn.Module):
         else:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
+        # GNN message passing
         x = torch.relu(self.conv1(x, edge_index))
         x = torch.relu(self.conv2(x, edge_index))
         x = self.conv3(x, edge_index)
 
+        # Pooling
         embedding = global_mean_pool(x, batch)
+
+        # Aggiungi features globali
+        global_features = self.compute_global_features(data)
+        embedding = torch.cat([embedding, global_features], dim=1)
 
         raw = self.predictor(embedding)
 
+        # Vincola output con softplus
         val = F.softplus(raw)
 
         alpha_min = val[:, 0] + 1.0
         alpha_max = alpha_min + val[:, 1] + 1.0
 
         beta_min = val[:, 2] + 0.1
-        beta_max = beta_min + val[:, 3] + 0.2
+        beta_max = beta_min + val[:, 3] + 0.1
 
         out = torch.stack([alpha_min, alpha_max, beta_min, beta_max], dim=1)
 
@@ -325,7 +453,7 @@ def train_range_predictor(n_iterations=200, T=100, verbose=True):
     history = []
 
     print("=" * 60)
-    print("TRAINING GNN - PREDIZIONE RANGE Î±, Î²")
+    print("TRAINING GNN - PREDIZIONE RANGE α e β")
     print("=" * 60)
 
     for iteration in range(n_iterations):
@@ -382,6 +510,6 @@ def train_range_predictor(n_iterations=200, T=100, verbose=True):
 
         if verbose and iteration % 10 == 0:
             print(f"Iter {iteration:3d} | {ft_data['structure']:8s} | "
-                  f"CV={cv:.3f} | Î±=[{a_min:.1f},{a_max:.1f}] Î²=[{b_min:.2f},{b_max:.2f}]")
+                  f"CV={cv:.3f} | α=[{a_min:.1f},{a_max:.1f}] β=[{b_min:.2f},{b_max:.2f}]")
 
     return model

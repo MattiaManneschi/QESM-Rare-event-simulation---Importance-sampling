@@ -1,14 +1,10 @@
-import os
 import random
 import math
-
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from collections import defaultdict
-import matplotlib.pyplot as plt
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -186,7 +182,7 @@ def train_mlp_cross_entropy(config):
     # Input fittizio per la rete (media degli one-hot vectors)
     input_tensor = torch.eye(n).mean(dim=0).unsqueeze(0).to(device)
 
-    print("=" * 60)
+    print("\n=" * 60)
     print("TRAINING MLP - IS VS MC")
     print("=" * 60)
 
@@ -316,61 +312,7 @@ def train_mlp_cross_entropy(config):
 
     return model
 
-def save_results(results, filename='results/results.csv'):
-    """
-    Salva i risultati in un file CSV.
-    Appende se il file esiste già.
-    """
-    import csv
-    from datetime import datetime
-
-    # Crea cartella results/ se non esiste
-    os.makedirs('results', exist_ok=True)
-
-    file_exists = os.path.exists(filename)
-
-    with open(filename, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=results.keys())
-
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(results)
-
-    print(f"\nRisultati salvati in '{filename}'")
-
-def plot_results_summary(filename='results/results.csv'):
-    if not os.path.exists(filename): return
-
-    df = pd.read_csv(filename)
-    # Prendiamo solo gli ultimi test (es. Gli ultimi 3)
-    df = df.tail(3)
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-
-    # Grafico 1: Confronto Coefficiente di Variazione (Più basso = meglio)
-    x = np.arange(len(df))
-    width = 0.35
-    ax1.bar(x - width / 2, df['cv_is'], width, label='CV Importance Sampling', color='skyblue')
-    ax1.bar(x + width / 2, df['cv_mc'], width, label='CV Monte Carlo', color='lightcoral')
-    ax1.set_ylabel('Errore Relativo (CV)')
-    ax1.set_title('Precisione Statistica (Inferiore è meglio)')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(df['structure'])
-    ax1.legend()
-
-    # Grafico 2: Guadagno di Efficienza
-    colors = ['green' if x >= 1 else 'red' for x in df['efficiency_gain']]
-    ax2.bar(df['structure'], df['efficiency_gain'], color=colors)
-    ax2.axhline(y=1, color='black', linestyle='--')
-    ax2.set_ylabel('Efficienza (x volte rispetto a MC)')
-    ax2.set_title('Guadagno di Efficienza (Sopra 1 = IS vince)')
-
-    plt.tight_layout()
-    plt.savefig('results/performance_comparison.png')
-    print("\n[Grafico] Riepilogo performance salvato in 'results/performance_comparison.png'")
-
-def evaluate_model(model, config, tree_structure, N_is, N_mc):
+def evaluate_model(model, config, N_is, N_mc):
     """Valuta IS vs MC con metriche dettagliate."""
 
     print("\n" + "=" * 60)
@@ -459,43 +401,14 @@ def evaluate_model(model, config, tree_structure, N_is, N_mc):
 
     print("=" * 60)
 
-    # Salva risultati
-    from datetime import datetime
-    results = {
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'structure': tree_structure,
-        'n_components': len(comps),
-        'T': config.T,
-        'alpha_min': config.alpha_min,
-        'alpha_max': config.alpha_max,
-        'beta_min': config.beta_min,
-        'beta_max': config.beta_max,
-        'N_is': N_is,
-        'N_mc': N_mc,
-        'n_top_is': n_top_is,
-        'n_top_mc': n_top_mc,
-        'top_rate_is': n_top_is / N_is,
-        'top_rate_mc': n_top_mc / N_mc,
-        'p_is': p_is,
-        'p_mc': p_mc,
-        'var_is': var_is,
-        'var_mc': var_mc,
-        'cv_is': cv_is,
-        'cv_mc': cv_mc,
-        'efficiency_gain': efficiency_gain,
-        'rel_error': rel_error
-    }
+    return p_is, var_is, p_mc, var_mc
 
-    save_results(results)
-    plot_results_summary()
-
-def run_range_tester(ft, fault_tree_logic, ranges_dict, tree_structure, T=100, N_is=None, N_mc=None):
+def run_overall_tester(ft, fault_tree_logic, ranges_dict, T=100, N_is=None, N_mc=None):
     """
     Esegue il test completo:
     1. Training IS con i range predetti
     2. Valutazione IS vs MC (stampa risultati)
     """
-
     lambda_dict, mu_dict = ft.get_lambda_mu()
     config = ExternalConfig(lambda_dict, mu_dict, fault_tree_logic, ranges_dict, T)
 
@@ -509,4 +422,6 @@ def run_range_tester(ft, fault_tree_logic, ranges_dict, tree_structure, T=100, N
         N_mc = 10000
 
     # Valutazione (stampa direttamente i risultati)
-    evaluate_model(model, config, tree_structure, N_is, N_mc)
+    p_is, var_is, p_mc, var_mc = evaluate_model(model, config, N_is, N_mc)
+
+    return p_is, var_is, p_mc, var_mc
