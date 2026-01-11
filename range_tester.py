@@ -223,7 +223,7 @@ def train_mlp_cross_entropy(config):
             weights = [math.exp(tr["log_w"]) if tr["top"] else 0.0 for tr in trajs]
             all_weights_epoch.extend(weights)
 
-            # Calcola la performance del campione (log-sum-exp per stabilitÃ  numerica)
+            # Calcola la performance del campione (log-sum-exp per stabilita'  numerica)
             # Performance = media dei pesi IS = stima della probabilitÃ
             if traj_logs:
                 m_log = max(traj_logs)
@@ -231,7 +231,7 @@ def train_mlp_cross_entropy(config):
                 log_perf = lse - math.log(config.n_trajectories)
                 log_performances.append(log_perf)
             else:
-                log_performances.append(-1e10) # PenalitÃ  se nessun top event
+                log_performances.append(-1e10) # Penalita'  se nessun top event
 
             samples_data.append({
                 'a_sampled': a_sampled,
@@ -404,11 +404,6 @@ def evaluate_model(model, config, N_is, N_mc):
     return p_is, var_is, p_mc, var_mc
 
 def run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  T=100):
-    """
-    Esegue il test completo:
-    1. Training IS con i range predetti
-    2. Valutazione IS vs MC (stampa risultati)
-    """
     lambda_dict, mu_dict = ft.get_lambda_mu()
     config = ExternalConfig(lambda_dict, mu_dict, fault_tree_logic, ranges_dict, T)
 

@@ -2,25 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import numpy as np
 import math
 from torch_geometric.nn import GCNConv, global_mean_pool
 
-from range_predictor import generate_simple_fault_tree, simulate_CTMC
+from range_predictor import FaultTreeGraph, generate_simple_fault_tree, simulate_CTMC
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
 class SamplePredictor(nn.Module):
-    """
-    GNN che predice il numero di samples necessari per IS e MC.
-
-    Input: grafo del fault tree
-    Output: [log10(N_is), log10(N_mc)]
-
-    Usa features globali del grafo per catturare la struttura.
-    """
-
     def __init__(self, node_features=5, hidden_dim=64):
         super().__init__()
 
@@ -88,9 +77,8 @@ class SamplePredictor(nn.Module):
         return sampled, log_prob
 
 def find_required_samples_is(lambda_, mu_, alpha, beta, T, fault_tree, target_top_events=50, max_n=50000, batch_size=500):
-    """
-    Trova il numero di samples IS necessari per raggiungere target_cv.
-    """
+
+    # Esegui un batch iniziale per stimare il top rate
     results = [simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree)
                for _ in range(batch_size)]
     n_top = sum(1 for r in results if r['top'])
@@ -104,9 +92,6 @@ def find_required_samples_is(lambda_, mu_, alpha, beta, T, fault_tree, target_to
     return min(max(estimated_n, batch_size), max_n)
 
 def find_required_samples_mc(lambda_, mu_, T, fault_tree, target_top_events=50, max_n=100000, batch_size=500):
-    """
-    Trova il numero di samples MC (alpha=beta=1) necessari per target_cv.
-    """
     comps = list(lambda_.keys())
     alpha = {c: 1.0 for c in comps}
     beta = {c: 1.0 for c in comps}
@@ -124,15 +109,11 @@ def find_required_samples_mc(lambda_, mu_, T, fault_tree, target_top_events=50, 
 
     return min(max(estimated_n, batch_size), max_n)
 
-def train_sample_predictor(n_iterations=200, T=100, verbose=True):
-    """
-    Training self-supervised del SamplePredictor.
-    """
+def train_sample_predictor(range_model, n_iterations=200, T=100, target_top_events=50, verbose=True):
 
     model = SamplePredictor().to(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-
-    history = []
+    range_model.eval()  # Non modificare range_model
 
     print("=" * 60)
     print("TRAINING GNN - PREDIZIONE NUMERO SAMPLES")
@@ -148,28 +129,35 @@ def train_sample_predictor(n_iterations=200, T=100, verbose=True):
         fault_tree = ft_data['fault_tree']
         comps = list(lambda_.keys())
 
-        # 2. Predici N
+        # 2. Ottieni α, β dal range_model
+        with torch.no_grad():
+            ranges, _ = range_model(pyg_data)
+            r = ranges[0].cpu().numpy()
+            alpha_val = (r[0] + r[1]) / 2  # Media del range
+            beta_val = (r[2] + r[3]) / 2
+
+        alpha_dict = {c: alpha_val for c in comps}
+        beta_dict = {c: beta_val for c in comps}
+
+        # 3. Predici N
         log_n_pred = model(pyg_data)
         log_n_sampled, log_prob = model.sample_prediction(log_n_pred)
 
         n_is_pred = int(10 ** log_n_sampled[0, 0].item())
         n_mc_pred = int(10 ** log_n_sampled[0, 1].item())
 
-        # 3. Trova N reale
-        alpha = {c: 3.0 for c in comps}
-        beta = {c: 0.5 for c in comps}
-
+        # 4. Trova N reale
         try:
             n_is_real = find_required_samples_is(
-                lambda_, mu_, alpha, beta, T, fault_tree,
-                target_top_events=50, max_n=20000, batch_size=200
+                lambda_, mu_, alpha_dict, beta_dict, T, fault_tree,
+                target_top_events=target_top_events, max_n=20000, batch_size=200
             )
             n_mc_real = find_required_samples_mc(
                 lambda_, mu_, T, fault_tree,
-                target_top_events=50, max_n=50000, batch_size=500
+                target_top_events=target_top_events, max_n=50000, batch_size=500
             )
 
-            # 4. Reward
+            # 5. Reward
             log_n_is_real = math.log10(max(100, n_is_real))
             log_n_mc_real = math.log10(max(100, n_mc_real))
 
@@ -178,8 +166,13 @@ def train_sample_predictor(n_iterations=200, T=100, verbose=True):
 
             reward = -(error_is + error_mc)
 
-            if error_is < 0.3 and error_mc < 0.3:
-                reward += 1.0
+            # Bonus se IS < MC (comportamento corretto)
+            if n_is_real < n_mc_real and n_is_pred < n_mc_pred:
+                reward += 2.0
+
+            # Penalità se predice IS > MC
+            if n_is_pred > n_mc_pred:
+                reward -= 3.0
 
         except Exception as e:
             print(f"  Errore: {e}")
@@ -187,7 +180,7 @@ def train_sample_predictor(n_iterations=200, T=100, verbose=True):
             n_is_real = n_is_pred
             n_mc_real = n_mc_pred
 
-        # 5. Policy Gradient update
+        # 6. Update
         loss = -reward * log_prob
 
         optimizer.zero_grad()
@@ -195,27 +188,13 @@ def train_sample_predictor(n_iterations=200, T=100, verbose=True):
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
-        history.append({
-            'iteration': iteration,
-            'structure': ft_data['structure'],
-            'n_is_pred': n_is_pred,
-            'n_is_real': n_is_real,
-            'n_mc_pred': n_mc_pred,
-            'n_mc_real': n_mc_real,
-            'reward': reward
-        })
-
         if verbose and iteration % 10 == 0:
-            print(f"Iter {iteration:3d} | {ft_data['structure']:8s} | "
-                  f"IS: {n_is_pred:5d} vs {n_is_real:5d} | "
-                  f"MC: {n_mc_pred:5d} vs {n_mc_real:5d}")
+            print(f"Iter {iteration:3d} | {ft_data['structure']:15s} | "
+                  f"IS: {n_is_pred:5d}/{n_is_real:5d} | MC: {n_mc_pred:5d}/{n_mc_real:5d} | Rew: {reward:.2f}")
 
     return model
 
 def get_predicted_samples(model, pyg_data):
-    """
-    Usa il modello addestrato per predire N_is e N_mc.
-    """
     model.eval()
 
     if not hasattr(pyg_data, 'batch'):

@@ -352,11 +352,14 @@ class RangePredictor(nn.Module):
         return out, embedding
 
     def get_ranges(self, raw):
-        """Converte output raw in range vincolati."""
-        alpha_min = 1.0 + torch.sigmoid(raw[:, 0]) * 4.0
-        alpha_max = alpha_min + 1.0 + torch.sigmoid(raw[:, 1]) * 10.0
-        beta_min = 0.1 + torch.sigmoid(raw[:, 2]) * 0.4
-        beta_max = beta_min + 0.1 + torch.sigmoid(raw[:, 3]) * 0.4
+        # Usiamo il Sigmoid per mappare l'uscita tra 1.0 e 2.5 invece che 1.0 e 5.0
+        # Questo impedisce alla rete di essere troppo "violenta"
+        alpha_min = 1.0 + torch.sigmoid(raw[:, 0]) * 1.0  # Range: [1.0, 2.0]
+        alpha_max = alpha_min + torch.sigmoid(raw[:, 1]) * 1.0  # Range: [alpha_min, alpha_min + 1.0]
+
+        # Beta (riparazione) dovrebbe stare vicino a 1.0 se non strettamente necessario
+        beta_min = 0.9 + torch.sigmoid(raw[:, 2]) * 0.2
+        beta_max = beta_min + torch.sigmoid(raw[:, 3]) * 0.2
 
         return alpha_min, alpha_max, beta_min, beta_max
 
@@ -503,11 +506,10 @@ def train_range_predictor(n_iterations=200, T=100, verbose=True):
                 # SEZIONE CRUCIALE: Confronto IS vs MC
                 # Se la varianza IS è più alta di quella MC, l'IA sta facendo danni
                 if var_is > var_mc:
-                    penalty = (var_is / (var_mc + 1e-10))
-                    reward -= min(penalty, 15.0)  # Penalizziamo fino a -15
+                    reward = -5.0 * (var_is / (var_mc + 1e-9))
                 else:
-                    # Se l'IS è meglio del MC, diamo un bonus
-                    reward += 2.0
+                    gain = var_mc / (var_is + 1e-9)
+                    reward = 1.0 + math.log(gain + 1.0)
 
         except Exception as e:
             reward = -10.0
