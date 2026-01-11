@@ -201,7 +201,7 @@ def test_models():
     results = {}
 
     # Header Tabella
-    log(f"\n{'Struttura':<20} | {'α_min':>6} {'α_max':>6} | {'β_min':>6} {'β_max':>6} | {'N_is':>7} {'N_mc':>7} | {'Ratio':>6} | {'P_is':.6e} {'Var_is':.6e} | {'P_mc':.6e} {'Var_mc':.6e}")
+    log(f"\n{'Struttura':<20} | {'α_min':>6} {'α_max':>6} | {'β_min':>6} {'β_max':>6} | {'N_is':>7} {'N_mc':>7} | {'Ratio':>6} | {'P_is':>12} {'Var_is':>12} | {'P_mc':>12} {'Var_mc':>12}")
     log("-" * 80)
 
     # 4. Ciclo di predizione
@@ -224,6 +224,7 @@ def test_models():
                 pyg_data.batch = torch.zeros(pyg_data.x.size(0), dtype=torch.long, device=device)
             n_is, n_mc = get_predicted_samples(sample_model, pyg_data)
             fault_tree_logic = ft.get_logic_function()
+        print("\n")
         print("ALBERO -> ",name)
         p_is, var_is, p_mc, var_mc = run_overall_tester(ft, fault_tree_logic, ranges)
 

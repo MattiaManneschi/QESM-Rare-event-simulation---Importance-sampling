@@ -182,7 +182,7 @@ def train_mlp_cross_entropy(config):
     # Input fittizio per la rete (media degli one-hot vectors)
     input_tensor = torch.eye(n).mean(dim=0).unsqueeze(0).to(device)
 
-    print("\n=" * 60)
+    print("=" * 60)
     print("TRAINING MLP - IS VS MC")
     print("=" * 60)
 
