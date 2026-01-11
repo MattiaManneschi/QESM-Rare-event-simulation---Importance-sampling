@@ -403,7 +403,7 @@ def evaluate_model(model, config, N_is, N_mc):
 
     return p_is, var_is, p_mc, var_mc
 
-def run_overall_tester(ft, fault_tree_logic, ranges_dict, T=100, N_is=None, N_mc=None):
+def run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  T=100):
     """
     Esegue il test completo:
     1. Training IS con i range predetti

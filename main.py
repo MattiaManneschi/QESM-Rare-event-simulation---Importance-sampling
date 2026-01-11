@@ -226,7 +226,7 @@ def test_models():
             fault_tree_logic = ft.get_logic_function()
         print("\n")
         print("ALBERO -> ",name)
-        p_is, var_is, p_mc, var_mc = run_overall_tester(ft, fault_tree_logic, ranges)
+        p_is, var_is, p_mc, var_mc = run_overall_tester(ft, fault_tree_logic, ranges, n_is, n_mc)
 
         ratio = n_mc / n_is if n_is > 0 else 0
         results[name] = {

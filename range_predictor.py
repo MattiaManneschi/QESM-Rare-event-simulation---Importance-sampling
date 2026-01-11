@@ -436,13 +436,26 @@ def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min,
     p_is = np.mean(weights)
     std_is = np.std(weights) / np.sqrt(n_eval)
     cv = std_is / p_is if p_is > 0 else float('inf')
+    var_is = np.var(results)
+
+    results_mc = []
+    for _ in range(n_eval):
+        # Biasing neutro per MC
+        a_mc = {c: 1.0 for c in lambda_}
+        b_mc = {c: 1.0 for c in mu_}
+        res = simulate_CTMC(lambda_, mu_, a_mc, b_mc, T, fault_tree.get_logic_function())
+        results_mc.append(1.0 if res['top'] else 0.0)
+
+    var_mc = np.var(results_mc)
 
     return {
         'p_is': p_is,
         'std_is': std_is,
         'cv': cv,
         'n_top': n_top,
-        'top_rate': n_top / n_eval
+        'top_rate': n_top / n_eval,
+        'var_is': var_is,
+        'var_mc': var_mc
     }
 
 def train_range_predictor(n_iterations=200, T=100, verbose=True):
@@ -478,13 +491,23 @@ def train_range_predictor(n_iterations=200, T=100, verbose=True):
 
             cv = eval_results['cv']
             top_rate = eval_results['top_rate']
+            var_is = eval_results['var_is']
+            var_mc = eval_results['var_mc']
 
-            if cv == float('inf') or top_rate == 0:
-                reward = -10.0
+            if cv == float('inf') or eval_results['top_rate'] == 0:
+                reward = -20.0  # Penalità massima per fallimento totale
             else:
+                # Il reward base è l'inverso del CV (vogliamo CV basso)
                 reward = -cv
-                if cv < 0.5:
-                    reward += 1.0
+
+                # SEZIONE CRUCIALE: Confronto IS vs MC
+                # Se la varianza IS è più alta di quella MC, l'IA sta facendo danni
+                if var_is > var_mc:
+                    penalty = (var_is / (var_mc + 1e-10))
+                    reward -= min(penalty, 15.0)  # Penalizziamo fino a -15
+                else:
+                    # Se l'IS è meglio del MC, diamo un bonus
+                    reward += 2.0
 
         except Exception as e:
             reward = -10.0
