@@ -99,11 +99,6 @@ class FaultTreeGraph:
 def generate_simple_fault_tree():
     """
     Genera fault tree semplici con P ~ 10^-1 o 10^-2.
-
-    Con λ/μ ~ 0.1:
-    - OR di 2-3 componenti: P ≈ n * (λ/μ) ~ 0.1-0.3
-    - AND di 2 componenti: P ≈ (λ/μ)^2 ~ 0.01
-    - 2oo3: P ≈ 3 * (λ/μ)^2 ~ 0.03
     """
 
     base_mu = 0.1

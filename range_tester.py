@@ -494,13 +494,6 @@ def run_range_tester(ft, fault_tree_logic, ranges_dict, tree_structure, T=100, N
     Esegue il test completo:
     1. Training IS con i range predetti
     2. Valutazione IS vs MC (stampa risultati)
-
-    Args:
-        ft: FaultTreeGraph
-        fault_tree_logic: funzione booleana del fault tree
-        ranges_dict: {'alpha': (min, max), 'beta': (min, max)}
-        T: orizzonte temporale
-        N_is, N_mc: numero samples (se None, usa valori default)
     """
 
     lambda_dict, mu_dict = ft.get_lambda_mu()

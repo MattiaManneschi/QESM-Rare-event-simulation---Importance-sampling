@@ -19,13 +19,6 @@ sample_model = None
 def load_or_train_range_model(n_iterations=200, force_train=False):
     """
     Carica il RangePredictor se esiste, altrimenti lo addestra e salva.
-
-    Args:
-        n_iterations: numero iterazioni training
-        force_train: se True, riaddestra anche se esiste
-
-    Returns:
-        RangePredictor addestrato
     """
     global range_model
 
@@ -45,17 +38,9 @@ def load_or_train_range_model(n_iterations=200, force_train=False):
 
     return range_model
 
-
 def load_or_train_sample_model(n_iterations=200, force_train=False):
     """
     Carica il SamplePredictor se esiste, altrimenti lo addestra e salva.
-
-    Args:
-        n_iterations: numero iterazioni training
-        force_train: se True, riaddestra anche se esiste
-
-    Returns:
-        SamplePredictor addestrato
     """
     global sample_model
 
@@ -75,29 +60,16 @@ def load_or_train_sample_model(n_iterations=200, force_train=False):
 
     return sample_model
 
-
 def initialize_models(n_iter_range=200, n_iter_sample=200, force_train=False):
     """
     Inizializza entrambi i modelli (carica o addestra).
-
-    Args:
-        n_iter_range: iterazioni per RangePredictor
-        n_iter_sample: iterazioni per SamplePredictor
-        force_train: se True, riaddestra entrambi
     """
     load_or_train_range_model(n_iter_range, force_train)
     load_or_train_sample_model(n_iter_sample, force_train)
 
-
 def get_ranges(ft):
     """
     Usa RangePredictor per ottenere i range ottimali di α e β.
-
-    Args:
-        ft: FaultTreeGraph
-
-    Returns:
-        (alpha_min, alpha_max, beta_min, beta_max)
     """
     global range_model
 
@@ -120,16 +92,9 @@ def get_ranges(ft):
 
     return alpha_min, alpha_max, beta_min, beta_max
 
-
 def get_samples(ft):
     """
     Usa SamplePredictor per ottenere N_is e N_mc ottimali.
-
-    Args:
-        ft: FaultTreeGraph
-
-    Returns:
-        (N_is, N_mc)
     """
     global sample_model
 
@@ -150,19 +115,7 @@ def get_samples(ft):
 
     return N_is, N_mc
 
-
 def run_pipeline(ft, tree_structure, T=100):
-    """
-    Pipeline completa:
-    1. Predici range α, β
-    2. Predici N_is, N_mc
-    3. Esegui IS e confronta con MC (stampa risultati)
-
-    Args:
-        ft: FaultTreeGraph
-        T: orizzonte temporale
-    """
-
     print("\n" + "=" * 60)
     print("PIPELINE IMPORTANCE SAMPLING")
     print("=" * 60)
