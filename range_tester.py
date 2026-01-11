@@ -1,19 +1,23 @@
+import os
 import random
 import math
+
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from collections import defaultdict
-
-from sample_predictor import get_predicted_samples
+import matplotlib.pyplot as plt
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
 class AlphaBetaMLP(nn.Module):
+    """
+    Rete neurale che predice i parametri di biasing (alpha, beta) per ogni componente.
+    """
 
-    def __init__(self, n_components, config=None):
+    def __init__(self, n_components, config):
         super(AlphaBetaMLP, self).__init__()
         self.config = config
 
@@ -23,10 +27,9 @@ class AlphaBetaMLP(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, n_components * 2) # Output: alpha e beta per ogni componente
+            nn.Linear(64, n_components * 2)
         )
 
-        # Inizializzazione conservativa dei pesi per partire da valori centrali
         for m in self.net.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight, gain=0.5)
@@ -36,8 +39,6 @@ class AlphaBetaMLP(nn.Module):
         out = self.net(x)
         alpha_raw, beta_raw = torch.chunk(out, 2, dim=-1)
 
-        # Sigmoid mappa in [0,1], poi scaliamo nel range desiderato
-        # Con bias=0 iniziale: sigmoid(0)=0.5 → valore centrale del range
         alpha = torch.sigmoid(alpha_raw) * (self.config.alpha_max - self.config.alpha_min) + self.config.alpha_min
         beta = torch.sigmoid(beta_raw) * (self.config.beta_max - self.config.beta_min) + self.config.beta_min
 
@@ -53,7 +54,8 @@ class DiagnosticLogger:
         self.weight_stats = []
 
     def log_weights(self, weights, epoch):
-        if len(weights) == 0: return None
+        if len(weights) == 0:
+            return None
         weights_array = np.array(weights)
         stats = {
             'epoch': epoch,
@@ -68,6 +70,7 @@ class DiagnosticLogger:
         print(f"Epoch {epoch:3d} | Loss: {loss:.4f} | Elite: {n_elite}/{n_samples}")
 
 class ExternalConfig:
+    """Configurazione per il training IS con range esterni."""
 
     def __init__(self, lambda_, mu_, fault_tree_logic, ranges, T=100):
         self.lambda_ = lambda_
@@ -105,10 +108,10 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
         rates_is = {}
 
         for i in lambda_:
-            if state[i] == 0: # Componente funzionante → può guastarsi
+            if state[i] == 0: # Componente funzionante â†’ puÃ² guastarsi
                 rates_orig[i] = lambda_[i]
                 rates_is[i] = lambda_[i] * alpha[i] # Accelera guasti
-            else: # Componente guasto → può essere riparato
+            else: # Componente guasto â†’ puÃ² essere riparato
                 rates_orig[i] = mu_[i]
                 rates_is[i] = mu_[i] * beta[i]  # Rallenta riparazioni
 
@@ -224,15 +227,15 @@ def train_mlp_cross_entropy(config):
             weights = [math.exp(tr["log_w"]) if tr["top"] else 0.0 for tr in trajs]
             all_weights_epoch.extend(weights)
 
-            # Calcola la performance del campione (log-sum-exp per stabilità numerica)
-            # Performance = media dei pesi IS = stima della probabilità
+            # Calcola la performance del campione (log-sum-exp per stabilitÃ  numerica)
+            # Performance = media dei pesi IS = stima della probabilitÃ
             if traj_logs:
                 m_log = max(traj_logs)
                 lse = m_log + math.log(sum(math.exp(lw - m_log) for lw in traj_logs))
                 log_perf = lse - math.log(config.n_trajectories)
                 log_performances.append(log_perf)
             else:
-                log_performances.append(-1e10) # Penalità se nessun top event
+                log_performances.append(-1e10) # PenalitÃ  se nessun top event
 
             samples_data.append({
                 'a_sampled': a_sampled,
@@ -257,19 +260,19 @@ def train_mlp_cross_entropy(config):
             elite_logs = torch.tensor([log_performances[i] for i in elite_indices],
                                       device=device)
 
-            # Pesi softmax per dare più importanza agli elite migliori
+            # Pesi softmax per dare piÃ¹ importanza agli elite migliori
             with torch.no_grad():
                 shifted_logs = elite_logs - torch.max(elite_logs)
                 weights = torch.softmax(shifted_logs, dim=0)
 
-            # Policy Gradient Loss: aumenta la probabilità degli elite
-            # loss = -Σ weight_i * log π(params_i | θ)
+            # Policy Gradient Loss: aumenta la probabilitÃ  degli elite
+            # loss = -Î£ weight_i * log Ï€(params_i | Î¸)
             policy_loss = 0.0
             entropy_bonus = 0.0
 
             for i, idx in enumerate(elite_indices):
                 sample = samples_data[idx]
-                # log π(alpha, beta | θ) = log_prob della distribuzione normale
+                # log Ï€(alpha, beta | Î¸) = log_prob della distribuzione normale
                 log_p_a = sample['dist_a'].log_prob(sample['a_sampled']).sum()
                 log_p_b = sample['dist_b'].log_prob(sample['b_sampled']).sum()
                 policy_loss -= weights[i] * (log_p_a + log_p_b)
@@ -313,73 +316,204 @@ def train_mlp_cross_entropy(config):
 
     return model
 
-def evaluate_model(model, config, N_is, N_mc):
-    print("\n" + "=" * 30)
-    print("VALUTAZIONE FINALE E CONFRONTO")
-    print("=" * 30)
+def save_results(results, filename='results/results.csv'):
+    """
+    Salva i risultati in un file CSV.
+    Appende se il file esiste già.
+    """
+    import csv
+    from datetime import datetime
+
+    # Crea cartella results/ se non esiste
+    os.makedirs('results', exist_ok=True)
+
+    file_exists = os.path.exists(filename)
+
+    with open(filename, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=results.keys())
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow(results)
+
+    print(f"\nRisultati salvati in '{filename}'")
+
+def plot_results_summary(filename='results/results.csv'):
+    if not os.path.exists(filename): return
+
+    df = pd.read_csv(filename)
+    # Prendiamo solo gli ultimi test (es. Gli ultimi 3)
+    df = df.tail(3)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Grafico 1: Confronto Coefficiente di Variazione (Più basso = meglio)
+    x = np.arange(len(df))
+    width = 0.35
+    ax1.bar(x - width / 2, df['cv_is'], width, label='CV Importance Sampling', color='skyblue')
+    ax1.bar(x + width / 2, df['cv_mc'], width, label='CV Monte Carlo', color='lightcoral')
+    ax1.set_ylabel('Errore Relativo (CV)')
+    ax1.set_title('Precisione Statistica (Inferiore è meglio)')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(df['structure'])
+    ax1.legend()
+
+    # Grafico 2: Guadagno di Efficienza
+    colors = ['green' if x >= 1 else 'red' for x in df['efficiency_gain']]
+    ax2.bar(df['structure'], df['efficiency_gain'], color=colors)
+    ax2.axhline(y=1, color='black', linestyle='--')
+    ax2.set_ylabel('Efficienza (x volte rispetto a MC)')
+    ax2.set_title('Guadagno di Efficienza (Sopra 1 = IS vince)')
+
+    plt.tight_layout()
+    plt.savefig('results/performance_comparison.png')
+    print("\n[Grafico] Riepilogo performance salvato in 'results/performance_comparison.png'")
+
+def evaluate_model(model, config, tree_structure, N_is, N_mc):
+    """Valuta IS vs MC con metriche dettagliate."""
+
+    print("\n" + "=" * 60)
+    print("VALUTAZIONE FINALE")
+    print("=" * 60)
 
     lambda_ = config.lambda_
     mu_ = config.mu_
     comps = list(lambda_.keys())
     input_tensor = torch.eye(len(lambda_)).mean(dim=0).unsqueeze(0).to(device)
 
-    # 1. Recupero parametri ottimizzati dal modello IS
     with torch.no_grad():
         alpha_final, beta_final = model(input_tensor)
 
     a_f = {c: alpha_final[0, i].item() for i, c in enumerate(comps)}
     b_f = {c: beta_final[0, i].item() for i, c in enumerate(comps)}
 
-    # 2. Esecuzione IMPORTANCE SAMPLING (IS)
-    print(f"Esecuzione IS ({N_is} simulazioni)...")
-    results_is = [simulate_CTMC(lambda_, mu_, a_f, b_f, config.T, config.fault_tree) for _ in range(N_is)]
+    print(f"\nParametri ottimizzati:")
+    for c in comps:
+        print(f"  {c}: α={a_f[c]:.3f}, β={b_f[c]:.3f}")
+
+    # IS
+    print(f"\nEsecuzione IS ({N_is} simulazioni)...")
+    results_is = [simulate_CTMC(lambda_, mu_, a_f, b_f, config.T, config.fault_tree)
+                  for _ in range(N_is)]
 
     weights_is = [math.exp(r['log_w']) if r['top'] else 0.0 for r in results_is]
+    n_top_is = sum(1 for r in results_is if r['top'])
     p_is = np.mean(weights_is)
     var_is = np.var(weights_is)
+    std_is = np.std(weights_is) / np.sqrt(N_is)
+    cv_is = std_is / p_is if p_is > 0 else float('inf')
 
-    # 3. Esecuzione MONTE CARLO CLASSICO (MC)
-    # Usiamo alpha=1 e beta=1 (parametri reali del sistema)
-    print(f"Esecuzione MC Classico ({N_mc} simulazioni)...")
+    # MC
+    print(f"Esecuzione MC ({N_mc} simulazioni)...")
     a_mc = {c: 1.0 for c in comps}
     b_mc = {c: 1.0 for c in comps}
-    results_mc = [simulate_CTMC(lambda_, mu_, a_mc, b_mc, config.T, config.fault_tree) for _ in range(N_mc)]
+    results_mc = [simulate_CTMC(lambda_, mu_, a_mc, b_mc, config.T, config.fault_tree)
+                  for _ in range(N_mc)]
 
-    # In MC classico il peso è sempre 1 se colpisce il top, 0 altrimenti
     hits_mc = [1.0 if r['top'] else 0.0 for r in results_mc]
+    n_top_mc = int(sum(hits_mc))
     p_mc = np.mean(hits_mc)
     var_mc = np.var(hits_mc)
+    std_mc = np.sqrt(p_mc * (1 - p_mc) / N_mc) if p_mc > 0 else 0
+    cv_mc = std_mc / p_mc if p_mc > 0 else float('inf')
 
-    if var_is > 0:
+    # Calcola efficienza
+    if var_is > 0 and var_mc > 0:
         efficiency_gain = var_mc / var_is
-    else:
+    elif var_is == 0 and n_top_is > 0:
         efficiency_gain = float('inf')
-
-    print("\n--- RISULTATI ---")
-    print(f"Probabilità IS: {p_is:.6e} | Var: {var_is:.2e}")
-    print(f"Probabilità MC: {p_mc:.6e} | Var: {var_mc:.2e}")
-
-    print("-" * 30)
-    if efficiency_gain != float('inf'):
-        print(f"GUADAGNO DI EFFICIENZA: {efficiency_gain:.2f}x")
     else:
-        print("Guadagno Infinito: MC non ha trovato nessun evento, IS sì.")
-    print("-" * 30)
+        efficiency_gain = 1.0
 
-    return p_is
+    # Risultati
+    print("\n" + "=" * 60)
+    print("RISULTATI")
+    print("=" * 60)
 
-def get_samples(ft):
-    pyg_data = ft.to_pyg_data().to(device)
-    # aggiungere chiamata addestramento ia per stimare il numero di sample necessari
-    N_is, N_mc = get_predicted_samples(sample_model, pyg_data)
-    print("Numero di campioni stimati per IS: ", N_is)
-    print("Numero di campioni stimati per MC: ", N_mc)
-    return N_is, N_mc
+    print(f"\n{'IMPORTANCE SAMPLING':=^40}")
+    print(f"  Campioni totali:    {N_is}")
+    print(f"  Top events:         {n_top_is} ({100 * n_top_is / N_is:.2f}%)")
+    print(f"  Probabilità:        {p_is:.6e}")
+    print(f"  Varianza:           {var_is:.6e}")
+    print(f"  Errore standard:    {std_is:.6e}")
+    print(f"  CV:                 {cv_is:.4f}")
 
-def run_range_tester(ft, fault_tree_logic, ranges, T=100):
+    print(f"\n{'MONTE CARLO':=^40}")
+    print(f"  Campioni totali:    {N_mc}")
+    print(f"  Top events:         {n_top_mc} ({100 * n_top_mc / N_mc:.2f}%)")
+    print(f"  Probabilità:        {p_mc:.6e}")
+    print(f"  Varianza:           {var_mc:.6e}")
+    print(f"  Errore standard:    {std_mc:.6e}")
+    print(f"  CV:                 {cv_mc:.4f}")
+
+    print(f"\n{'CONFRONTO':=^40}")
+    if efficiency_gain != float('inf'):
+        print(f"  Guadagno efficienza: {efficiency_gain:.2f}x")
+    else:
+        print(f"  Guadagno efficienza: ∞ (MC non ha trovato eventi)")
+
+    rel_error = abs(p_is - p_mc) / p_mc * 100 if p_mc > 0 else float('inf')
+    if p_mc > 0:
+        print(f"  Errore relativo:     {rel_error:.2f}%")
+
+    print("=" * 60)
+
+    # Salva risultati
+    from datetime import datetime
+    results = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'structure': tree_structure,
+        'n_components': len(comps),
+        'T': config.T,
+        'alpha_min': config.alpha_min,
+        'alpha_max': config.alpha_max,
+        'beta_min': config.beta_min,
+        'beta_max': config.beta_max,
+        'N_is': N_is,
+        'N_mc': N_mc,
+        'n_top_is': n_top_is,
+        'n_top_mc': n_top_mc,
+        'top_rate_is': n_top_is / N_is,
+        'top_rate_mc': n_top_mc / N_mc,
+        'p_is': p_is,
+        'p_mc': p_mc,
+        'var_is': var_is,
+        'var_mc': var_mc,
+        'cv_is': cv_is,
+        'cv_mc': cv_mc,
+        'efficiency_gain': efficiency_gain,
+        'rel_error': rel_error
+    }
+
+    save_results(results)
+    plot_results_summary()
+
+def run_range_tester(ft, fault_tree_logic, ranges_dict, tree_structure, T=100, N_is=None, N_mc=None):
+    """
+    Esegue il test completo:
+    1. Training IS con i range predetti
+    2. Valutazione IS vs MC (stampa risultati)
+
+    Args:
+        ft: FaultTreeGraph
+        fault_tree_logic: funzione booleana del fault tree
+        ranges_dict: {'alpha': (min, max), 'beta': (min, max)}
+        T: orizzonte temporale
+        N_is, N_mc: numero samples (se None, usa valori default)
+    """
+
     lambda_dict, mu_dict = ft.get_lambda_mu()
-    config = ExternalConfig(lambda_dict, mu_dict, fault_tree_logic, ranges, T)
-    model = train_mlp_cross_entropy(config)
-    N_is, N_mc = get_samples(ft)
-    evaluate_model(model, config, N_is, N_mc)
+    config = ExternalConfig(lambda_dict, mu_dict, fault_tree_logic, ranges_dict, T)
 
+    # Training
+    model = train_mlp_cross_entropy(config)
+
+    # Usa valori default se non forniti
+    if N_is is None:
+        N_is = 10000
+    if N_mc is None:
+        N_mc = 10000
+
+    # Valutazione (stampa direttamente i risultati)
+    evaluate_model(model, config, tree_structure, N_is, N_mc)
