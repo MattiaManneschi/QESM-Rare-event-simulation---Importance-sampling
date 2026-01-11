@@ -13,12 +13,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 class FaultTreeGraph:
     """
     Rappresenta un fault tree come grafo per PyTorch Geometric.
-
-    Nodi componente: features = [λ, μ, 1, 0, 0]
-    Nodi AND gate:   features = [0, 0, 0, 1, 0]
-    Nodi OR gate:    features = [0, 0, 0, 0, 1]
-
-    Archi: figlio → padre (bottom-up)
     """
 
     def __init__(self):
