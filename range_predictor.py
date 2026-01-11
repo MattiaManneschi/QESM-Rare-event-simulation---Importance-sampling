@@ -10,7 +10,6 @@ import torch.nn.functional as F
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
 class FaultTreeGraph:
     """
     Rappresenta un fault tree come grafo per PyTorch Geometric.
@@ -337,7 +336,7 @@ def train_range_predictor(n_iterations=200, T=100, verbose=True):
     history = []
 
     print("=" * 60)
-    print("TRAINING GNN - PREDIZIONE RANGE α, β")
+    print("TRAINING GNN - PREDIZIONE RANGE Î±, Î²")
     print("=" * 60)
 
     for iteration in range(n_iterations):
@@ -394,6 +393,6 @@ def train_range_predictor(n_iterations=200, T=100, verbose=True):
 
         if verbose and iteration % 10 == 0:
             print(f"Iter {iteration:3d} | {ft_data['structure']:8s} | "
-                  f"CV={cv:.3f} | α=[{a_min:.1f},{a_max:.1f}] β=[{b_min:.2f},{b_max:.2f}]")
+                  f"CV={cv:.3f} | Î±=[{a_min:.1f},{a_max:.1f}] Î²=[{b_min:.2f},{b_max:.2f}]")
 
     return model
