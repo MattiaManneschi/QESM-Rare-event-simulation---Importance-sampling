@@ -132,7 +132,6 @@ if __name__ == "__main__":
     # Inizializza modelli (carica se esistono, altrimenti addestra e salva)
     initialize_models(n_iter_range=200, n_iter_sample=200, force_train=False)
 
-
     # Esempio: AND di 2 componenti
     print("\n" + "=" * 60)
     print("ESEMPIO: AND di 2 componenti")
@@ -153,7 +152,6 @@ if __name__ == "__main__":
     ft.add_gate('OR', nodes2)
     run_pipeline(ft)
 
-
     # Esempio: (A ∧ B) ∨ C
     print("\n" + "=" * 60)
     print("ESEMPIO: (A ∧ B) ∨ C")
@@ -167,77 +165,85 @@ if __name__ == "__main__":
     ft.add_gate('OR', [idx_AND, idx_C])
     run_pipeline(ft)
 
+    # 4. AND_3: tre componenti tutti guasti
     print("\n" + "=" * 60)
     print("ESEMPIO: AND_3")
     print("=" * 60)
     ft = FaultTreeGraph()
-    nodes = [ft.add_component(f"C{i}", 2e-2, 0.1) for i in range(3)]  # (0.2)³ ≈ 0.8%
+    nodes = [ft.add_component(f"C{i}", 3e-3, 0.1) for i in range(3)]
     ft.add_gate('AND', nodes)
     run_pipeline(ft)
 
+    # 5. OR_2: due componenti, basta uno guasto
+    print("\n" + "=" * 60)
+    print("ESEMPIO: OR_2")
+    print("=" * 60)
+    ft = FaultTreeGraph()
+    nodes = [ft.add_component(f"C{i}", 5e-5, 0.1) for i in range(2)]
+    ft.add_gate('OR', nodes)
+    run_pipeline(ft)
+
+    # 6. 2oo3: almeno 2 su 3 guasti
     print("\n" + "=" * 60)
     print("ESEMPIO: 2oo3 (voting)")
     print("=" * 60)
     ft = FaultTreeGraph()
-    nodes = [ft.add_component(f"C{i}", 1e-2, 0.1) for i in range(3)]  # 3×(0.1)² ≈ 3%
+    nodes = [ft.add_component(f"C{i}", 2e-3, 0.1) for i in range(3)]
     idx_AB = ft.add_gate('AND', [nodes[0], nodes[1]])
     idx_AC = ft.add_gate('AND', [nodes[0], nodes[2]])
     idx_BC = ft.add_gate('AND', [nodes[1], nodes[2]])
     ft.add_gate('OR', [idx_AB, idx_AC, idx_BC])
     run_pipeline(ft)
 
-    print("\n" + "=" * 60)
-    print("ESEMPIO: (A ∧ B) ∨ (C ∧ D)")
-    print("=" * 60)
-    ft = FaultTreeGraph()
-    idx_A = ft.add_component('A', 1e-2, 0.1)
-    idx_B = ft.add_component('B', 1e-2, 0.1)
-    idx_C = ft.add_component('C', 1e-2, 0.1)
-    idx_D = ft.add_component('D', 1e-2, 0.1)
-    idx_AND1 = ft.add_gate('AND', [idx_A, idx_B])  # (0.1)² = 1%
-    idx_AND2 = ft.add_gate('AND', [idx_C, idx_D])  # (0.1)² = 1%
-    ft.add_gate('OR', [idx_AND1, idx_AND2])  # ≈ 2%
-    run_pipeline(ft)
-
-    print("\n" + "=" * 60)
-    print("ESEMPIO: AND_3 profondo ((A ∧ B) ∧ C)")
-    print("=" * 60)
-    ft = FaultTreeGraph()
-    idx_A = ft.add_component('A', 2e-2, 0.1)
-    idx_B = ft.add_component('B', 2e-2, 0.1)
-    idx_C = ft.add_component('C', 2e-2, 0.1)
-    idx_AND1 = ft.add_gate('AND', [idx_A, idx_B])
-    ft.add_gate('AND', [idx_AND1, idx_C])  # (0.2)³ ≈ 0.8%
-    run_pipeline(ft)
-
-    print("\n" + "=" * 60)
-    print("ESEMPIO: (A ∨ B) ∧ (C ∨ D)")
-    print("=" * 60)
-    ft = FaultTreeGraph()
-    idx_A = ft.add_component('A', 5e-3, 0.1)
-    idx_B = ft.add_component('B', 5e-3, 0.1)
-    idx_C = ft.add_component('C', 5e-3, 0.1)
-    idx_D = ft.add_component('D', 5e-3, 0.1)
-    idx_OR1 = ft.add_gate('OR', [idx_A, idx_B])  # ≈ 10%
-    idx_OR2 = ft.add_gate('OR', [idx_C, idx_D])  # ≈ 10%
-    ft.add_gate('AND', [idx_OR1, idx_OR2])  # 0.1 × 0.1 ≈ 1%
-    run_pipeline(ft)
-
+    # 7. (A ∨ B) ∧ C: OR sotto AND
     print("\n" + "=" * 60)
     print("ESEMPIO: (A ∨ B) ∧ C")
     print("=" * 60)
     ft = FaultTreeGraph()
-    idx_A = ft.add_component('A', 5e-2, 0.1)  # 0.5
-    idx_B = ft.add_component('B', 5e-2, 0.1)  # 0.5
-    idx_C = ft.add_component('C', 2e-2, 0.1)  # 0.2
-    idx_OR = ft.add_gate('OR', [idx_A, idx_B])  # P(A∨B) ≈ 0.75
-    ft.add_gate('AND', [idx_OR, idx_C])  # 0.75 × 0.2 ≈ 1.5%
+    idx_A = ft.add_component('A', 5e-3, 0.1)  # 0.5
+    idx_B = ft.add_component('B', 5e-3, 0.1)  # 0.5
+    idx_C = ft.add_component('C', 2e-3, 0.1)  # 0.2
+    idx_OR = ft.add_gate('OR', [idx_A, idx_B])
+    ft.add_gate('AND', [idx_OR, idx_C])
     run_pipeline(ft)
 
+    # 8. (A ∧ B) ∨ (C ∧ D): due AND in parallelo
     print("\n" + "=" * 60)
-    print("ESEMPIO: OR_2")
+    print("ESEMPIO: (A ∧ B) ∨ (C ∧ D)")
     print("=" * 60)
     ft = FaultTreeGraph()
-    nodes = [ft.add_component(f"C{i}", 5e-4, 0.1) for i in range(2)]  # 2 × 0.005 ≈ 1%
-    ft.add_gate('OR', nodes)
+    idx_A = ft.add_component('A', 3e-3, 0.1)
+    idx_B = ft.add_component('B', 3e-3, 0.1)
+    idx_C = ft.add_component('C', 3e-3, 0.1)
+    idx_D = ft.add_component('D', 3e-3, 0.1)
+    idx_AND1 = ft.add_gate('AND', [idx_A, idx_B])
+    idx_AND2 = ft.add_gate('AND', [idx_C, idx_D])
+    ft.add_gate('OR', [idx_AND1, idx_AND2])
+    run_pipeline(ft)
+
+    # 9. ((A ∧ B) ∧ C): AND profondo
+    print("\n" + "=" * 60)
+    print("ESEMPIO: AND_3 profondo ((A ∧ B) ∧ C)")
+    print("=" * 60)
+    ft = FaultTreeGraph()
+    idx_A = ft.add_component('A', 3e-3, 0.1)
+    idx_B = ft.add_component('B', 3e-3, 0.1)
+    idx_C = ft.add_component('C', 3e-3, 0.1)
+    idx_AND1 = ft.add_gate('AND', [idx_A, idx_B])
+    ft.add_gate('AND', [idx_AND1, idx_C])
+    run_pipeline(ft)
+
+
+    # 10. (A ∨ B) ∧ (C ∨ D): due OR in serie
+    print("\n" + "=" * 60)
+    print("ESEMPIO: (A ∨ B) ∧ (C ∨ D)")
+    print("=" * 60)
+    ft = FaultTreeGraph()
+    idx_A = ft.add_component('A', 1e-3, 0.1)
+    idx_B = ft.add_component('B', 1e-3, 0.1)
+    idx_C = ft.add_component('C', 1e-3, 0.1)
+    idx_D = ft.add_component('D', 1e-3, 0.1)
+    idx_OR1 = ft.add_gate('OR', [idx_A, idx_B])
+    idx_OR2 = ft.add_gate('OR', [idx_C, idx_D])
+    ft.add_gate('AND', [idx_OR1, idx_OR2])
     run_pipeline(ft)

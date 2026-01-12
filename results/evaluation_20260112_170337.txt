@@ -1,0 +1,25 @@
+
+============================================================
+RISULTATI
+============================================================
+
+==========IMPORTANCE SAMPLING===========
+  Campioni totali:    500
+  Top events:         59 (11.80%)
+  Probabilità:        1.842607e-02
+  Varianza:           4.434975e-03
+  Errore standard:    2.978246e-03
+  CV:                 0.1616
+
+==============MONTE CARLO===============
+  Campioni totali:    3020
+  Top events:         60 (1.99%)
+  Probabilità:        1.986755e-02
+  Varianza:           1.947283e-02
+  Errore standard:    2.539283e-03
+  CV:                 0.1278
+
+===============CONFRONTO================
+  Guadagno efficienza: 4.39x
+  Errore relativo:     7.26%
+============================================================
