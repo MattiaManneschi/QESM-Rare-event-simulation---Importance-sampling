@@ -418,7 +418,6 @@ def evaluate_model(model, config, N_is, N_mc):
 
     return p_is, var_is, p_mc, var_mc
 
-
 def run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  T=100):
     lambda_dict, mu_dict = ft.get_lambda_mu()
     config = ExternalConfig(lambda_dict, mu_dict, fault_tree_logic, ranges_dict, T)

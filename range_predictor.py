@@ -7,6 +7,7 @@ import numpy as np
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv, global_mean_pool
 import torch.nn.functional as F
+from range_tester import simulate_CTMC
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -371,53 +372,6 @@ class RangePredictor(nn.Module):
         log_prob = dist.log_prob(sampled).sum(dim=-1)
 
         return sampled, log_prob
-
-def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
-    """Simula una traiettoria CTMC con Importance Sampling."""
-    t = 0.0
-    state = {i: 0 for i in lambda_}
-    log_w = 0.0
-    top_event_hit = False
-
-    while t < T:
-        rates_orig = {}
-        rates_is = {}
-
-        for i in lambda_:
-            if state[i] == 0:
-                rates_orig[i] = lambda_[i]
-                rates_is[i] = lambda_[i] * alpha[i]
-            else:
-                rates_orig[i] = mu_[i]
-                rates_is[i] = mu_[i] * beta[i]
-
-        R_orig = sum(rates_orig.values())
-        R_is = sum(rates_is.values())
-
-        if R_is <= 0:
-            break
-
-        dt = random.expovariate(R_is)
-
-        if t + dt > T:
-            log_w += (R_is - R_orig) * (T - t)
-            break
-
-        log_w += (R_is - R_orig) * dt
-        t += dt
-
-        comps = list(lambda_.keys())
-        p_is = [rates_is[c] / R_is for c in comps]
-        chosen_comp = random.choices(comps, weights=p_is)[0]
-
-        log_w += math.log((rates_orig[chosen_comp] / R_orig) / (rates_is[chosen_comp] / R_is))
-
-        state[chosen_comp] = 1 - state[chosen_comp]
-
-        if fault_tree(state):
-            top_event_hit = True
-
-    return {"top": top_event_hit, "log_w": log_w}
 
 def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min, beta_max, n_eval=5000):
     """
