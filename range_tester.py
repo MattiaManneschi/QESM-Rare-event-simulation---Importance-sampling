@@ -368,40 +368,56 @@ def evaluate_model(model, config, N_is, N_mc):
     else:
         efficiency_gain = 1.0
 
-    # Risultati
-    print("\n" + "=" * 60)
-    print("RISULTATI")
-    print("=" * 60)
+    lines = []  # Buffer per salvare in TXT
 
-    print(f"\n{'IMPORTANCE SAMPLING':=^40}")
-    print(f"  Campioni totali:    {N_is}")
-    print(f"  Top events:         {n_top_is} ({100 * n_top_is / N_is:.2f}%)")
-    print(f"  Probabilità:        {p_is:.6e}")
-    print(f"  Varianza:           {var_is:.6e}")
-    print(f"  Errore standard:    {std_is:.6e}")
-    print(f"  CV:                 {cv_is:.4f}")
+    def log(msg):
+        print(msg)
+        lines.append(str(msg))
 
-    print(f"\n{'MONTE CARLO':=^40}")
-    print(f"  Campioni totali:    {N_mc}")
-    print(f"  Top events:         {n_top_mc} ({100 * n_top_mc / N_mc:.2f}%)")
-    print(f"  Probabilità:        {p_mc:.6e}")
-    print(f"  Varianza:           {var_mc:.6e}")
-    print(f"  Errore standard:    {std_mc:.6e}")
-    print(f"  CV:                 {cv_mc:.4f}")
+    log("\n" + "=" * 60)
+    log("RISULTATI")
+    log("=" * 60)
 
-    print(f"\n{'CONFRONTO':=^40}")
+    log(f"\n{'IMPORTANCE SAMPLING':=^40}")
+    log(f"  Campioni totali:    {N_is}")
+    log(f"  Top events:         {n_top_is} ({100 * n_top_is / N_is:.2f}%)")
+    log(f"  Probabilità:        {p_is:.6e}")
+    log(f"  Varianza:           {var_is:.6e}")
+    log(f"  Errore standard:    {std_is:.6e}")
+    log(f"  CV:                 {cv_is:.4f}")
+
+    log(f"\n{'MONTE CARLO':=^40}")
+    log(f"  Campioni totali:    {N_mc}")
+    log(f"  Top events:         {n_top_mc} ({100 * n_top_mc / N_mc:.2f}%)")
+    log(f"  Probabilità:        {p_mc:.6e}")
+    log(f"  Varianza:           {var_mc:.6e}")
+    log(f"  Errore standard:    {std_mc:.6e}")
+    log(f"  CV:                 {cv_mc:.4f}")
+
+    log(f"\n{'CONFRONTO':=^40}")
     if efficiency_gain != float('inf'):
-        print(f"  Guadagno efficienza: {efficiency_gain:.2f}x")
+        log(f"  Guadagno efficienza: {efficiency_gain:.2f}x")
     else:
-        print(f"  Guadagno efficienza: ∞ (MC non ha trovato eventi)")
+        log(f"  Guadagno efficienza: ∞ (MC non ha trovato eventi)")
 
     rel_error = abs(p_is - p_mc) / p_mc * 100 if p_mc > 0 else float('inf')
     if p_mc > 0:
-        print(f"  Errore relativo:     {rel_error:.2f}%")
+        log(f"  Errore relativo:     {rel_error:.2f}%")
 
-    print("=" * 60)
+    log("=" * 60)
+
+    # Salva in TXT
+    import os
+    from datetime import datetime
+    os.makedirs('results', exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    txt_filename = f'results/evaluation_{timestamp}.txt'
+    with open(txt_filename, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    print(f"\nRisultati salvati in '{txt_filename}'")
 
     return p_is, var_is, p_mc, var_mc
+
 
 def run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  T=100):
     lambda_dict, mu_dict = ft.get_lambda_mu()
