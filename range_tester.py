@@ -378,6 +378,10 @@ def evaluate_model(model, config, N_is, N_mc):
     log("RISULTATI")
     log("=" * 60)
 
+    log(f"\n-> Range suggeriti:")
+    log(f"   Alpha: [{config.alpha_min:.2f}, {config.alpha_max:.2f}]")
+    log(f"   Beta:  [{config.beta_min:.2f}, {config.beta_max:.2f}]")
+
     log(f"\n{'IMPORTANCE SAMPLING':=^40}")
     log(f"  Campioni totali:    {N_is}")
     log(f"  Top events:         {n_top_is} ({100 * n_top_is / N_is:.2f}%)")

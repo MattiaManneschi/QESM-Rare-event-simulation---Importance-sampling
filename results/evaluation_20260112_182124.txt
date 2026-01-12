@@ -1,0 +1,29 @@
+
+============================================================
+RISULTATI
+============================================================
+
+-> Range suggeriti:
+   Alpha: [1.84, 3.45]
+   Beta:  [0.64, 1.47]
+
+==========IMPORTANCE SAMPLING===========
+  Campioni totali:    1259
+  Top events:         99 (7.86%)
+  Probabilità:        2.989742e-02
+  Varianza:           1.082366e-02
+  Errore standard:    2.932069e-03
+  CV:                 0.0981
+
+==============MONTE CARLO===============
+  Campioni totali:    9737
+  Top events:         312 (3.20%)
+  Probabilità:        3.204272e-02
+  Varianza:           3.101599e-02
+  Errore standard:    1.784762e-03
+  CV:                 0.0557
+
+===============CONFRONTO================
+  Guadagno efficienza: 2.87x
+  Errore relativo:     6.70%
+============================================================
