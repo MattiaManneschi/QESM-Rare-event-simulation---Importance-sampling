@@ -1,8 +1,8 @@
 import os
 import torch
-from range_predictor import RangePredictor, train_range_predictor, FaultTreeGraph
-from sample_predictor import SamplePredictor, train_sample_predictor, get_predicted_samples
-from range_tester import run_overall_tester
+from alfa_beta_range_predictor import RangePredictor, train_range_predictor, FaultTreeGraph
+from N_samples_predictor import SamplePredictor, train_sample_predictor, get_predicted_samples
+from is_optimizer_evaluator import run_overall_test
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -125,7 +125,7 @@ def run_pipeline(ft, topology_name):
     # 3. Esegui test (stampa direttamente i risultati)
     print("\n[3/3] Esecuzione IS vs MC...")
     fault_tree_logic = ft.get_logic_function()
-    run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc, topology_name)
+    run_overall_test(ft, fault_tree_logic, ranges_dict, N_is, N_mc, topology_name)
 
 if __name__ == "__main__":
 
