@@ -353,14 +353,12 @@ class RangePredictor(nn.Module):
         return out, embedding
 
     def get_ranges(self, raw):
-        # Usiamo il Sigmoid per mappare l'uscita tra 1.0 e 2.5 invece che 1.0 e 5.0
-        # Questo impedisce alla rete di essere troppo "violenta"
-        alpha_min = 1.0 + torch.sigmoid(raw[:, 0]) * 1.0  # Range: [1.0, 2.0]
-        alpha_max = alpha_min + torch.sigmoid(raw[:, 1]) * 1.0  # Range: [alpha_min, alpha_min + 1.0]
+        # Range più ampi per strutture complesse
+        alpha_min = 1.0 + torch.sigmoid(raw[:, 0]) * 2.0  # [1.0, 3.0]
+        alpha_max = alpha_min + torch.sigmoid(raw[:, 1]) * 5.0  # fino a 8.0
 
-        # Beta (riparazione) dovrebbe stare vicino a 1.0 se non strettamente necessario
-        beta_min = 0.9 + torch.sigmoid(raw[:, 2]) * 0.2
-        beta_max = beta_min + torch.sigmoid(raw[:, 3]) * 0.2
+        beta_min = 0.3 + torch.sigmoid(raw[:, 2]) * 0.4  # [0.3, 0.7]
+        beta_max = beta_min + torch.sigmoid(raw[:, 3]) * 0.4  # [0.3, 1.1]
 
         return alpha_min, alpha_max, beta_min, beta_max
 

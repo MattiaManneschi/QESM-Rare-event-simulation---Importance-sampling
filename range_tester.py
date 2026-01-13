@@ -1,3 +1,4 @@
+from datetime import datetime
 import random
 import math
 import torch
@@ -312,16 +313,33 @@ def train_mlp_cross_entropy(config):
 
     return model
 
-def evaluate_model(model, config, N_is, N_mc):
+def evaluate_model(model, config, N_is, N_mc, topology_name):
     """Valuta IS vs MC con metriche dettagliate."""
 
-    print("\n" + "=" * 60)
-    print("VALUTAZIONE FINALE")
-    print("=" * 60)
+    lines = []  # Buffer per salvataggio TXT
 
+    def log(msg):
+        print(msg)
+        lines.append(str(msg))
+
+    log("\n" + "=" * 60)
+    log("RISULTATI")
+    log("=" * 60)
+
+    # Topologia
     lambda_ = config.lambda_
     mu_ = config.mu_
     comps = list(lambda_.keys())
+
+    log(f"\n-> Topologia: {topology_name}")
+    log(f"-> Lambda: {[lambda_[c] for c in comps]}")
+    log(f"-> Mu:     {[mu_[c] for c in comps]}")
+    log(f"-> T:      {config.T}")
+
+    log(f"\n-> Range suggeriti:")
+    log(f"   Alpha: [{config.alpha_min:.2f}, {config.alpha_max:.2f}]")
+    log(f"   Beta:  [{config.beta_min:.2f}, {config.beta_max:.2f}]")
+
     input_tensor = torch.eye(len(lambda_)).mean(dim=0).unsqueeze(0).to(device)
 
     with torch.no_grad():
@@ -330,12 +348,12 @@ def evaluate_model(model, config, N_is, N_mc):
     a_f = {c: alpha_final[0, i].item() for i, c in enumerate(comps)}
     b_f = {c: beta_final[0, i].item() for i, c in enumerate(comps)}
 
-    print(f"\nParametri ottimizzati:")
+    log(f"\nParametri ottimizzati:")
     for c in comps:
-        print(f"  {c}: α={a_f[c]:.3f}, β={b_f[c]:.3f}")
+        log(f"  {c}: α={a_f[c]:.3f}, β={b_f[c]:.3f}")
 
     # IS
-    print(f"\nEsecuzione IS ({N_is} simulazioni)...")
+    log(f"\nEsecuzione IS ({N_is} simulazioni)...")
     results_is = [simulate_CTMC(lambda_, mu_, a_f, b_f, config.T, config.fault_tree)
                   for _ in range(N_is)]
 
@@ -347,7 +365,7 @@ def evaluate_model(model, config, N_is, N_mc):
     cv_is = std_is / p_is if p_is > 0 else float('inf')
 
     # MC
-    print(f"Esecuzione MC ({N_mc} simulazioni)...")
+    log(f"Esecuzione MC ({N_mc} simulazioni)...")
     a_mc = {c: 1.0 for c in comps}
     b_mc = {c: 1.0 for c in comps}
     results_mc = [simulate_CTMC(lambda_, mu_, a_mc, b_mc, config.T, config.fault_tree)
@@ -368,19 +386,12 @@ def evaluate_model(model, config, N_is, N_mc):
     else:
         efficiency_gain = 1.0
 
-    lines = []  # Buffer per salvare in TXT
+    rel_error = abs(p_is - p_mc) / p_mc * 100 if p_mc > 0 else float('inf')
 
-    def log(msg):
-        print(msg)
-        lines.append(str(msg))
-
+    # Risultati
     log("\n" + "=" * 60)
     log("RISULTATI")
     log("=" * 60)
-
-    log(f"\n-> Range suggeriti:")
-    log(f"   Alpha: [{config.alpha_min:.2f}, {config.alpha_max:.2f}]")
-    log(f"   Beta:  [{config.beta_min:.2f}, {config.beta_max:.2f}]")
 
     log(f"\n{'IMPORTANCE SAMPLING':=^40}")
     log(f"  Campioni totali:    {N_is}")
@@ -404,25 +415,21 @@ def evaluate_model(model, config, N_is, N_mc):
     else:
         log(f"  Guadagno efficienza: ∞ (MC non ha trovato eventi)")
 
-    rel_error = abs(p_is - p_mc) / p_mc * 100 if p_mc > 0 else float('inf')
     if p_mc > 0:
         log(f"  Errore relativo:     {rel_error:.2f}%")
 
     log("=" * 60)
 
-    # Salva in TXT
-    import os
-    from datetime import datetime
-    os.makedirs('results', exist_ok=True)
+    # Salva risultati TXT
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     txt_filename = f'results/evaluation_{timestamp}.txt'
     with open(txt_filename, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
-    print(f"\nRisultati salvati in '{txt_filename}'")
+    print(f"Risultati salvati in '{txt_filename}'")
 
     return p_is, var_is, p_mc, var_mc
 
-def run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  T=100):
+def run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  topology_name, T=100):
     lambda_dict, mu_dict = ft.get_lambda_mu()
     config = ExternalConfig(lambda_dict, mu_dict, fault_tree_logic, ranges_dict, T)
 
@@ -436,6 +443,6 @@ def run_overall_tester(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  T=100):
         N_mc = 10000
 
     # Valutazione (stampa direttamente i risultati)
-    p_is, var_is, p_mc, var_mc = evaluate_model(model, config, N_is, N_mc)
+    p_is, var_is, p_mc, var_mc = evaluate_model(model, config, N_is, N_mc, topology_name)
 
     return p_is, var_is, p_mc, var_mc
