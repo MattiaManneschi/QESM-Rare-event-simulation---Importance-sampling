@@ -7,7 +7,7 @@ import numpy as np
 from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv, global_mean_pool
 import torch.nn.functional as F
-from range_tester import simulate_CTMC
+from is_optimizer_evaluator import simulate_CTMC
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 

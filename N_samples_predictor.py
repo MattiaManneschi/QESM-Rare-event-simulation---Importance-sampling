@@ -4,8 +4,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import math
 from torch_geometric.nn import GCNConv, global_mean_pool
-from range_predictor import generate_simple_fault_tree
-from range_tester import simulate_CTMC
+from alfa_beta_range_predictor import generate_simple_fault_tree
+from is_optimizer_evaluator import simulate_CTMC
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
