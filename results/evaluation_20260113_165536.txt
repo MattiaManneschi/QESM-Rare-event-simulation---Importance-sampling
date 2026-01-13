@@ -1,0 +1,46 @@
+
+============================================================
+RISULTATI
+============================================================
+
+-> Topologia: (A ∨ B) ∧ C
+-> Lambda: [0.005, 0.005, 0.002]
+-> Mu:     [0.1, 0.1, 0.1]
+-> T:      100
+
+-> Range suggeriti:
+   Alpha: [1.80, 3.61]
+   Beta:  [0.90, 1.88]
+
+Parametri ottimizzati:
+  A: α=2.880, β=1.402
+  B: α=2.896, β=1.499
+  C: α=2.510, β=1.430
+
+Esecuzione IS (877 simulazioni)...
+Esecuzione MC (9275 simulazioni)...
+
+============================================================
+RISULTATI
+============================================================
+
+==========IMPORTANCE SAMPLING===========
+  Campioni totali:    877
+  Top events:         119 (13.57%)
+  Probabilità:        2.271310e-02
+  Varianza:           1.092178e-02
+  Errore standard:    3.528962e-03
+  CV:                 0.1554
+
+==============MONTE CARLO===============
+  Campioni totali:    9275
+  Top events:         305 (3.29%)
+  Probabilità:        3.288410e-02
+  Varianza:           3.180273e-02
+  Errore standard:    1.851720e-03
+  CV:                 0.0563
+
+===============CONFRONTO================
+  Guadagno efficienza: 2.91x
+  Errore relativo:     30.93%
+============================================================

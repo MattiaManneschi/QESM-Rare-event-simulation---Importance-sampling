@@ -1,0 +1,46 @@
+
+============================================================
+RISULTATI
+============================================================
+
+-> Topologia: AND_3
+-> Lambda: [0.005, 0.005, 0.005]
+-> Mu:     [0.1, 0.1, 0.1]
+-> T:      100
+
+-> Range suggeriti:
+   Alpha: [1.79, 3.61]
+   Beta:  [0.91, 1.86]
+
+Parametri ottimizzati:
+  C0: α=2.866, β=1.475
+  C1: α=2.741, β=1.431
+  C2: α=2.660, β=1.359
+
+Esecuzione IS (931 simulazioni)...
+Esecuzione MC (8894 simulazioni)...
+
+============================================================
+RISULTATI
+============================================================
+
+==========IMPORTANCE SAMPLING===========
+  Campioni totali:    931
+  Top events:         18 (1.93%)
+  Probabilità:        1.626763e-03
+  Varianza:           3.718970e-04
+  Errore standard:    6.320282e-04
+  CV:                 0.3885
+
+==============MONTE CARLO===============
+  Campioni totali:    8894
+  Top events:         17 (0.19%)
+  Probabilità:        1.911401e-03
+  Varianza:           1.907747e-03
+  Errore standard:    4.631396e-04
+  CV:                 0.2423
+
+===============CONFRONTO================
+  Guadagno efficienza: 5.13x
+  Errore relativo:     14.89%
+============================================================
