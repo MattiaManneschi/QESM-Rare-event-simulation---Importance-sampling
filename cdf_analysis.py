@@ -134,6 +134,10 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         print(f"SamplePredictor: {'Sì' if sample_model else 'No (fallback)'}")
         print("=" * 60)
 
+    test_ranges_20, _ = range_model(pyg_data, T=20, T_max=500)
+    test_ranges_400, _ = range_model(pyg_data, T=400, T_max=500)
+    print(f"TEST GNN -> T=20: {test_ranges_20[0, 0]:.4f} | T=400: {test_ranges_400[0, 0]:.4f}")
+
     for t in t_values:
         if verbose:
             print(f"\n[T = {t:.0f}] ", end="")
@@ -143,7 +147,7 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
 
         with torch.no_grad():
             # Passa T al RangePredictor (nuova interfaccia)
-            ranges_pred, _ = range_model(pyg_data, T=t, T_max=t_max)
+            ranges_pred, _ = range_model(pyg_data, T=t, T_max=500.0)
 
         # Usa i range predetti dal modello (che ora considera T)
         ranges_dict = {

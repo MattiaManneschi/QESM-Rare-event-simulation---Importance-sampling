@@ -133,7 +133,7 @@ def train_sample_predictor(range_model, n_iterations=200, T=100, target_top_even
 
         # 1. Ottieni biasing suggerito dal range_model
         with torch.no_grad():
-            ranges, _ = range_model(pyg_data)
+            ranges, _ = range_model(pyg_data, T=250.0, T_max=500.0)
             r = ranges[0].cpu().numpy()
             alpha_val = (r[0] + r[1]) / 2
             beta_val = (r[2] + r[3]) / 2
