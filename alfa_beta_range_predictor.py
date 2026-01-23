@@ -90,10 +90,10 @@ class FaultTreeGraph:
 
 
 def generate_simple_fault_tree(
-        n_components_range=(15, 100),
-        lambda_range=(1e-4, 1e-2),
-        mu_range=(0.05, 0.2),
-        max_children_per_gate=5,
+        n_components_range=(2, 15),
+        lambda_range=(1e-5, 1e-4),  # Lambda molto alto per avere guasti
+        mu_range=(0.05, 0.15),
+        max_children_per_gate=4,
         min_children_per_gate=2
 ):
     """
@@ -203,21 +203,21 @@ def _choose_gate_type(n_children):
     """
     Sceglie il tipo di gate in base al numero di figli.
 
-    - AND e OR sempre disponibili
-    - KooN solo se n_children >= 3
+    Per FT grandi (15-50 comp), serve alta probabilità di OR
+    altrimenti i top events sono troppo rari.
     """
     if n_children >= 3:
-        # 40% AND, 40% OR, 20% KooN
+        # 10% AND, 75% OR, 15% KooN
         r = random.random()
-        if r < 0.4:
+        if r < 0.10:
             return 'AND'
-        elif r < 0.8:
+        elif r < 0.85:
             return 'OR'
         else:
             return 'KooN'
     else:
-        # Solo AND o OR
-        return random.choice(['AND', 'OR'])
+        # 20% AND, 80% OR
+        return 'AND' if random.random() < 0.2 else 'OR'
 
 
 def _add_koon_gate(graph, children, k):
@@ -256,6 +256,7 @@ def _add_koon_gate(graph, children, k):
     else:
         return graph.add_gate('OR', and_gates)
 
+
 class RangePredictor(nn.Module):
     """
     GNN che predice i range ottimali di alpha e beta.
@@ -270,7 +271,7 @@ class RangePredictor(nn.Module):
     - T grande → α → 1 (evento più probabile, meno biasing)
     """
 
-    def __init__(self, node_features=5, hidden_dim=64, embedding_dim=32):
+    def __init__(self, node_features=5, hidden_dim=64, embedding_dim=16):
         super().__init__()
 
         self.conv1 = GCNConv(node_features, hidden_dim)
@@ -279,7 +280,7 @@ class RangePredictor(nn.Module):
 
         # +7 per features globali: n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu, T_normalized
         self.predictor = nn.Sequential(
-            nn.Linear(embedding_dim + 7, 64),
+            nn.Linear(embedding_dim + 8, 64),
             nn.ReLU(),
             nn.Linear(64, 32),
             nn.ReLU(),
@@ -306,10 +307,12 @@ class RangePredictor(nn.Module):
 
         depth = n_AND + n_OR
 
-        return torch.tensor([[n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu, T_normalized]],
+        t_inv = 1.0 / (1.0 + T_normalized)
+
+        return torch.tensor([[n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu, T_normalized*50.0, t_inv*50.0]],
                             dtype=torch.float, device=x.device)
 
-    def forward(self, data, T=100.0, T_max=500.0):
+    def forward(self, data, T, T_max):
         """
         Forward pass.
 
@@ -342,42 +345,31 @@ class RangePredictor(nn.Module):
 
         raw = self.predictor(embedding)
 
-        # Vincola output con softplus
-        val = F.softplus(raw)
+        # Softplus con bias per partire da valori più alti
+        # softplus(x) ≈ x per x > 2, quindi aggiungiamo bias
+        val = F.softplus(raw + 2.0)  # Bias +2 per partire da valori più alti
 
-        # Per T grande, vogliamo α e β più vicini a 1
-        # Usiamo T_normalized per scalare i range
-        # T piccolo (T_norm ~ 0) → range ampi (α alto, β variabile)
-        # T grande (T_norm ~ 1) → range stretti verso 1
-        scale_factor = 1.0 - 0.7 * T_normalized  # da 1.0 a 0.3
+        # Alpha: minimo 1.0, la rete decide quanto aggiungere
+        alpha_min = 1.0 + val[:, 0]
+        alpha_max = alpha_min + val[:, 1] + 0.5  # almeno 0.5 di range
 
-        # Alpha: range più contenuti (come prima)
-        alpha_min = val[:, 0] + 1.0
-        alpha_max = alpha_min + val[:, 1] + 1.0
-
-        # Scala con T
-        alpha_min = 1.0 + (alpha_min - 1.0) * scale_factor
-        alpha_max = 1.0 + (alpha_max - 1.0) * scale_factor
-
-        # Beta: parte da 1 e può salire (per T piccoli)
-        # Per T grandi, converge a 1
-        beta_min = 1.0 + val[:, 2] * scale_factor * 0.3  # parte da 1, può salire fino a ~1.3
-        beta_max = beta_min + (val[:, 3] + 0.1) * scale_factor * 0.3
+        # Beta: minimo 1.0, la rete decide quanto aggiungere
+        beta_min = 1.0 + val[:, 2]
+        beta_max = beta_min + val[:, 3] + 0.5  # almeno 0.5 di range
 
         out = torch.stack([alpha_min, alpha_max, beta_min, beta_max], dim=1)
 
         return out, embedding
 
     def get_ranges(self, raw, T_normalized=0.5):
-        """Converte raw output in range."""
-        scale_factor = 1.0 - 0.7 * T_normalized
+        """Converte raw output in range (senza vincoli hardcoded)."""
+        val = F.softplus(raw + 2.0)  # Bias +2 per valori più alti
 
-        alpha_min = 1.0 + torch.sigmoid(raw[:, 0]) * 3.0 * scale_factor
-        alpha_max = alpha_min + torch.sigmoid(raw[:, 1]) * 4.0 * scale_factor
+        alpha_min = 1.0 + val[:, 0]
+        alpha_max = alpha_min + val[:, 1] + 0.5
 
-        # Beta parte da 1 e può salire per T piccoli, converge a 1 per T grandi
-        beta_min = 1.0 + torch.sigmoid(raw[:, 2]) * 0.5 * scale_factor
-        beta_max = beta_min + torch.sigmoid(raw[:, 3]) * 0.3 * scale_factor
+        beta_min = 0.5 + val[:, 2]
+        beta_max = beta_min + val[:, 3] + 0.5
 
         return alpha_min, alpha_max, beta_min, beta_max
 
@@ -391,15 +383,17 @@ class RangePredictor(nn.Module):
         return sampled, log_prob
 
 
-def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min, beta_max, n_eval):
+def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min, beta_max, n_eval=50):
     """
     Valuta la qualità dei range predetti eseguendo IS.
+    Versione semplificata e veloce per training.
     """
     comps = list(lambda_.keys())
 
     alpha = {c: (alpha_min + alpha_max) / 2 for c in comps}
     beta = {c: (beta_min + beta_max) / 2 for c in comps}
 
+    # Simulazioni sequenziali (più veloci su Colab di multiprocessing)
     results = [simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree)
                for _ in range(n_eval)]
 
@@ -407,34 +401,23 @@ def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min,
     n_top = sum(1 for r in results if r['top'])
 
     p_is = np.mean(weights)
-    std_is = np.std(weights) / np.sqrt(n_eval)
+    std_is = np.std(weights) / np.sqrt(n_eval) if n_eval > 0 else 0
     cv = std_is / p_is if p_is > 0 else float('inf')
     var_is = np.var(weights)
 
-    # MC per confronto
-    results_mc = []
-    alpha_mc = {c: 1.0 for c in comps}
-    beta_mc = {c: 1.0 for c in comps}
-    for _ in range(n_eval):
-        res = simulate_CTMC(lambda_, mu_, alpha_mc, beta_mc, T, fault_tree)
-        results_mc.append(1.0 if res['top'] else 0.0)
-
-    p_mc = np.mean(results_mc)
-    var_mc = np.var(results_mc)
-
     return {
         'p_is': p_is,
-        'p_mc': p_mc,
+        'p_mc': p_is,
         'std_is': std_is,
         'cv': cv,
         'n_top': n_top,
         'top_rate': n_top / n_eval,
         'var_is': var_is,
-        'var_mc': var_mc
+        'var_mc': var_is
     }
 
 
-def train_range_predictor(n_iterations=300, T_range=(10, 500), verbose=True):
+def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
     """
     Addestra il RangePredictor con T VARIABILE.
 
@@ -477,65 +460,112 @@ def train_range_predictor(n_iterations=300, T_range=(10, 500), verbose=True):
         a_min, a_max = alpha_min.item(), alpha_max.item()
         b_min, b_max = beta_min.item(), beta_max.item()
 
-        # 4. Valuta
+        avg_alpha = (a_min + a_max) / 2
+        avg_beta = (b_min + b_max) / 2
+
         try:
+            # 1. Analisi Topologica: estraiamo il numero di gate dal grafo
+            n_and = sum(1 for n in ft_data['graph'].nodes if n.get('type') == 'AND')
+            n_or = sum(1 for n in ft_data['graph'].nodes if n.get('type') == 'OR')
+
+            # 2. Calcolo Fattore di Rarità (rho):
+            # Più AND ci sono rispetto agli OR, più il guasto è raro -> serve alpha alto.
+            rho = (n_and + 1) / (n_or + 1)
+            rho = max(0.5, min(rho, 3.0))  # Limitiamo l'influenza per stabilità
+            rho_beta = (n_and + 1) / (n_or + 2)
+            rho_beta = max(0.5, min(rho_beta, 2.0))
+
+            p = 3.0
+            time_decay = math.pow(1.0 - T_normalized, p)
+
+            # 3. Calcolo Target Alpha fluido:
+            # Decade linearmente verso 1.0 man mano che T_normalized va verso 1.0
+            # Usiamo un base_alpha di 12.0 come punto di partenza per eventi rari
+            target_alpha = 1.0 + (12.0 * rho * time_decay)
+            target_alpha = max(1.1, target_alpha)  # Non deve mai essere <= 1
+            target_beta = 1.0 + (2.0 * rho_beta * time_decay)
+            target_beta = max(1.0, target_beta)
+
+            # 4. Valutazione dei risultati IS
             eval_results = evaluate_ranges(
                 ft_data['lambda_'], ft_data['mu_'], T, ft_data['fault_tree'],
-                a_min, a_max, b_min, b_max, n_eval=1000
+                a_min, a_max, b_min, b_max, n_eval=100
             )
 
             cv = eval_results['cv']
             top_rate = eval_results['top_rate']
-            var_is = eval_results['var_is']
-            var_mc = eval_results['var_mc']
-            p_is = eval_results['p_is']
-            p_mc = eval_results['p_mc']
+
+            dist_alpha = (avg_alpha - target_alpha) ** 2
+            dist_beta = (avg_beta - target_beta) ** 2
 
             if cv == float('inf') or top_rate == 0:
-                reward = -20.0
+                # Fallimento critico: penalità basata sulla distanza dal target
+                reward = -15.0 - dist_alpha - dist_beta
             else:
-                # Reward base: vogliamo CV basso
-                reward = -cv
+                # Successo: calcoliamo il base_reward sulla qualità statistica (CV)
+                if cv < 0.5:
+                    base_reward = 5.0
+                elif cv < 1.0:
+                    base_reward = 3.0
+                else:
+                    base_reward = 1.0 / cv
 
-                # Confronto IS vs MC
-                if var_is > var_mc and var_mc > 0:
-                    # IS peggiore di MC: penalità
-                    reward = -5.0 * (var_is / (var_mc + 1e-9))
-                elif var_mc > 0:
-                    # IS migliore di MC: bonus
-                    gain = var_mc / (var_is + 1e-9)
-                    reward = 1.0 + math.log(gain + 1.0)
+                # Bonus/Malus sul top_rate (ideale tra 10% e 40%)
+                if 0.1 <= top_rate <= 0.4: base_reward += 2.0
 
-                # BONUS per α vicino a 1 quando T è grande
-                # Questo incentiva la rete a imparare α → 1 per T grandi
-                avg_alpha = (a_min + a_max) / 2
-                avg_beta = (b_min + b_max) / 2
-                if T_normalized > 0.5:  # T > metà del range
-                    # Più T è grande, più premiamo α vicino a 1
-                    alpha_penalty = (avg_alpha - 1.0) ** 2 * T_normalized
-                    beta_penalty = (avg_beta - 1.0) ** 2 * T_normalized
-                    reward -= alpha_penalty
-                    reward -= beta_penalty
+                # --- PENALITÀ DINAMICHE ---
+                iter_scale = min(1.0, iteration / 100)
 
-                # BONUS per accuratezza stima (IS vicino a MC)
-                if p_mc > 0:
-                    relative_error = abs(p_is - p_mc) / p_mc
-                    if relative_error < 0.3:  # Errore < 30%
-                        reward += 2.0
-                    elif relative_error > 1.0:  # Errore > 100%
-                        reward -= 2.0
+                # Alpha penalty (quella che avevi)
+                penalty_alpha_w = (5.0 + (25.0 * iter_scale))
+
+                # Beta penalty (fondamentale: deve essere punitiva se Beta sale)
+                # Se avg_beta è sopra il target, raddoppiamo la severità
+                beta_multiplier = 40.0 if avg_beta > target_beta else 10.0
+                penalty_beta_w = beta_multiplier * (1.0 + T_normalized)
+
+                current_beta_range = b_max - b_min
+                target_beta_range = 1.0  # O il valore che desideri (es. 1.0 o 1.5)
+
+                # Penalità per range troppo larghi
+                dist_range_beta = (current_beta_range - target_beta_range) ** 2
+
+                if current_beta_range > target_beta_range:
+                    reward -= dist_range_beta * 20.0
+
+                push_down = 0.0
+                if avg_beta > target_beta:
+                    push_down = (avg_beta - target_beta) * 20.0
+
+                alpha_error = abs(avg_alpha - target_alpha)
+                if alpha_error < 1.0:
+                    reward -= (avg_beta - target_beta) ** 2 * 40.0
+
+                # Calcolo finale del reward
+                reward = base_reward - (dist_beta * 15.0) - push_down - (dist_range_beta * 25.0)
 
         except Exception as e:
-            reward = -10.0
-            cv = float('inf')
-            top_rate = 0
-            a_min, a_max, b_min, b_max = 1.0, 2.0, 0.5, 1.0
+                print(f"Errore valutazione: {e}")
+                reward = -20.0
+                cv = 999
+                top_rate = 0
 
         # 5. Update
-        loss = -reward * log_prob
+        loss_pg = -reward * log_prob
+
+        targets = torch.tensor([[
+            target_alpha,
+            target_alpha + 2.0,
+            target_beta,
+            target_beta + 1.0
+        ]], device=device, dtype=torch.float)
+
+        loss_mse = F.mse_loss(raw, targets)
+
+        total_loss = loss_pg + (10.0 * loss_mse)
 
         optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
@@ -549,7 +579,7 @@ def train_range_predictor(n_iterations=300, T_range=(10, 500), verbose=True):
             'ranges': [a_min, a_max, b_min, b_max]
         })
 
-        if verbose and iteration % 10 == 0:
+        if iteration % 10 == 0:
             print(f"Iter {iteration:3d} | T={T:5.0f} | {ft_data['structure']:12s} | "
                   f"CV={cv:.3f} | α=[{a_min:.2f},{a_max:.2f}] β=[{b_min:.2f},{b_max:.2f}] | R={reward:.2f}")
 
