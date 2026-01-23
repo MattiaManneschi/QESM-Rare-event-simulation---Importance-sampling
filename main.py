@@ -183,17 +183,15 @@ def run_cdf_pipeline(ft_data, t_max=500, t_step=10):
 
 
 if __name__ == "__main__":
-    # =========================================================================
-    # TRAINING MODELLI (con T variabile!)
-    # =========================================================================
-    # force_train=True per riaddestrare con la nuova architettura
     initialize_models(
-        n_iter_range=500,  # Più iterazioni per imparare la dipendenza da T
-        n_iter_sample=500,
-        T_range=(10, 500),  # Range di T per il training
-        force_train=True
+        n_iter_range=1500,
+        n_iter_sample=1000,
+        T_range=(10, 500),
+        force_train=False
     )
 
-    ft_data = generate_simple_fault_tree()
+    iterations = 5
 
-    results = run_cdf_pipeline(ft_data, t_max=500, t_step=20)
+    for iteration in range(iterations):
+        ft_data = generate_simple_fault_tree()
+        results = run_cdf_pipeline(ft_data, t_max=500, t_step=5)

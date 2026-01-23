@@ -475,15 +475,15 @@ def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
             rho_beta = (n_and + 1) / (n_or + 2)
             rho_beta = max(0.5, min(rho_beta, 2.0))
 
-            p = 3.0
+            p = 4.0
             time_decay = math.pow(1.0 - T_normalized, p)
 
             # 3. Calcolo Target Alpha fluido:
             # Decade linearmente verso 1.0 man mano che T_normalized va verso 1.0
             # Usiamo un base_alpha di 12.0 come punto di partenza per eventi rari
-            target_alpha = 1.0 + (12.0 * rho * time_decay)
+            target_alpha = 1.0 + (10.0 * rho * time_decay)
             target_alpha = max(1.1, target_alpha)  # Non deve mai essere <= 1
-            target_beta = 1.0 + (2.0 * rho_beta * time_decay)
+            target_beta = 1.0 + (5.0 * rho_beta * time_decay)
             target_beta = max(1.0, target_beta)
 
             # 4. Valutazione dei risultati IS
@@ -503,46 +503,33 @@ def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
                 reward = -15.0 - dist_alpha - dist_beta
             else:
                 # Successo: calcoliamo il base_reward sulla qualità statistica (CV)
-                if cv < 0.5:
-                    base_reward = 5.0
+                if cv < 0.3:
+                    base_reward = 500.0  # Molto alto per bilanciare penalità
+                elif cv < 0.5:
+                    base_reward = 300.0
                 elif cv < 1.0:
-                    base_reward = 3.0
+                    base_reward = 100.0
                 else:
-                    base_reward = 1.0 / cv
+                    base_reward = 10.0 / cv
 
                 # Bonus/Malus sul top_rate (ideale tra 10% e 40%)
                 if 0.1 <= top_rate <= 0.4: base_reward += 2.0
 
-                # --- PENALITÀ DINAMICHE ---
-                iter_scale = min(1.0, iteration / 100)
+                # 2. CALCOLO PENALITÀ ALPHA E BETA
+                # Usiamo un peso che cresce col tempo per forzare l'asintoto a 1.0
+                penalty_alpha = dist_alpha * (15.0 + 30.0 * T_normalized)
 
-                # Alpha penalty (quella che avevi)
-                penalty_alpha_w = (5.0 + (25.0 * iter_scale))
+                penalty_beta = dist_beta * (15.0 + 30.0 * T_normalized)
 
-                # Beta penalty (fondamentale: deve essere punitiva se Beta sale)
-                # Se avg_beta è sopra il target, raddoppiamo la severità
-                beta_multiplier = 40.0 if avg_beta > target_beta else 10.0
-                penalty_beta_w = beta_multiplier * (1.0 + T_normalized)
-
+                # 3. PENALITÀ AMPIEZZA RANGE
                 current_beta_range = b_max - b_min
-                target_beta_range = 1.0  # O il valore che desideri (es. 1.0 o 1.5)
+                target_range = 1.0
+                penalty_range = 0.0
+                if current_beta_range > target_range:
+                    penalty_range = ((current_beta_range - target_range) ** 2) * 10.0
 
-                # Penalità per range troppo larghi
-                dist_range_beta = (current_beta_range - target_beta_range) ** 2
-
-                if current_beta_range > target_beta_range:
-                    reward -= dist_range_beta * 20.0
-
-                push_down = 0.0
-                if avg_beta > target_beta:
-                    push_down = (avg_beta - target_beta) * 20.0
-
-                alpha_error = abs(avg_alpha - target_alpha)
-                if alpha_error < 1.0:
-                    reward -= (avg_beta - target_beta) ** 2 * 40.0
-
-                # Calcolo finale del reward
-                reward = base_reward - (dist_beta * 15.0) - push_down - (dist_range_beta * 25.0)
+                # 4. ASSEMBLAGGIO FINALE
+                reward = base_reward - penalty_alpha - penalty_beta - penalty_range
 
         except Exception as e:
                 print(f"Errore valutazione: {e}")
