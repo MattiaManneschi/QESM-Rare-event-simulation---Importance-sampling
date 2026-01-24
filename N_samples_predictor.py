@@ -109,27 +109,49 @@ def find_required_samples_mc(lambda_, mu_, T, fault_tree, target_top_events=100,
 
     return min(max(estimated_n, batch_size), max_n)
 
-def train_sample_predictor(range_model, n_iterations=200, T=100, target_top_events=100, verbose=True):
+
+def train_sample_predictor(range_model, n_iterations, T=100, target_top_events=100,
+                           comp_range=(2, 15), pretrained_model=None, verbose=True):
     """
     Allena il SamplePredictor con Reward Asimmetrico:
     Punisce severamente la sottostima dei campioni necessaria per la precisione statistica.
+
+    Args:
+        range_model: modello RangePredictor già addestrato
+        n_iterations: numero di iterazioni di training
+        T: tempo di missione per le simulazioni
+        target_top_events: numero target di top events per stabilità
+        comp_range: (min_comp, max_comp) per generare fault tree
+        pretrained_model: modello pre-addestrato per fine-tuning (opzionale)
+        verbose: stampa progresso
     """
-    model = SamplePredictor().to(device)
+
+    # Usa modello pre-addestrato o creane uno nuovo
+    if pretrained_model is not None:
+        model = pretrained_model.to(device)
+        print(f"[Fine-tuning] Partendo da modello pre-addestrato")
+    else:
+        model = SamplePredictor().to(device)
+        print(f"[Training] Partendo da zero")
+
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
     range_model.eval()
 
     print("=" * 60)
     print(f"TRAINING GNN - PREDIZIONE SAMPLES (Target Events: {target_top_events})")
+    print(f"Range componenti: [{comp_range}]")
     print("=" * 60)
 
     for iteration in range(n_iterations):
-        ft_data = generate_simple_fault_tree()
+        # Genera fault tree con comp_range
+        ft_data = generate_simple_fault_tree(comp_range)
         pyg_data = ft_data['graph'].to_pyg_data().to(device)
 
         lambda_ = ft_data['lambda_']
         mu_ = ft_data['mu_']
         fault_tree = ft_data['fault_tree']
         comps = list(lambda_.keys())
+        n_comps = len(comps)
 
         # 1. Ottieni biasing suggerito dal range_model
         with torch.no_grad():
@@ -173,7 +195,6 @@ def train_sample_predictor(range_model, n_iterations=200, T=100, target_top_even
             reward = -(error_is + error_mc)
 
             # Bonus se IS è più efficiente di MC, MA solo se entrambi hanno campioni sufficienti
-            # (usiamo diff > -0.1 come soglia di tolleranza per la sottostima logaritmica)
             if n_is_pred < n_mc_pred and diff_is > -0.1 and diff_mc > -0.1:
                 reward += 3.0
 
@@ -192,7 +213,7 @@ def train_sample_predictor(range_model, n_iterations=200, T=100, target_top_even
         optimizer.step()
 
         if verbose and iteration % 10 == 0:
-            print(f"Iter {iteration:3d} | {ft_data['structure']:15s} | "
+            print(f"Iter {iteration:3d} | comp={n_comps:2d} | {ft_data['structure']:25s} | "
                   f"IS: {n_is_pred:5d}/{n_is_real:5d} | MC: {n_mc_pred:5d}/{n_mc_real:5d} | Rew: {reward:.2f}")
 
     return model

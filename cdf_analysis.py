@@ -110,6 +110,7 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
     """
     lambda_, mu_ = ft.get_lambda_mu()
     comps = list(lambda_.keys())
+    n_comps = len(comps)
 
     # Prepara dati PyG base
     pyg_data = ft.to_pyg_data()
@@ -165,8 +166,8 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         # 3. Configura ExternalConfig per questo t con range specifici
         config = ExternalConfig(lambda_, mu_, fault_tree_logic, ranges_dict, T=t)
         config.epochs = training_epochs
-        config.n_samples = 200
-        config.n_trajectories = 200
+        config.n_samples = n_comps*20
+        config.n_trajectories = n_comps*20
 
         # 4. Addestra MLP da zero per questo t
         model = train_mlp_cross_entropy(config)
@@ -205,7 +206,7 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
                   f"ᾱ={avg_alpha:.2f}, β̄={avg_beta:.2f}")
 
         # Stop se P > 10% (oltre questa soglia l'unreliability non è interessante)
-        if cdf_point['p_is'] > 0.1:
+        if cdf_point['p_mc'] > 0.1:
             if verbose:
                 print(f"\n[STOP] P_is > 10%, interrompo a T={t}")
             break

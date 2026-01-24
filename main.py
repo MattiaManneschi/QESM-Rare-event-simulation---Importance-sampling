@@ -1,5 +1,6 @@
 import os
 import torch
+
 from alfa_beta_range_predictor import RangePredictor, train_range_predictor, FaultTreeGraph, generate_simple_fault_tree
 from N_samples_predictor import SamplePredictor, train_sample_predictor, get_predicted_samples
 from cdf_analysis import run_cdf_analysis
@@ -9,61 +10,109 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Percorsi file modelli
 MODELS_DIR = 'models'
-RANGE_MODEL_PATH = os.path.join(MODELS_DIR, 'range_predictor.pth')
-SAMPLE_MODEL_PATH = os.path.join(MODELS_DIR, 'sample_predictor.pth')
+SAMPLE_MODEL_PATH = os.path.join(MODELS_DIR, 'sample_predictor_2_15.pth')
 
 # Modelli globali (addestrati una volta)
 range_model = None
 sample_model = None
 
 
-def load_or_train_range_model(n_iterations=300, T_range=(10, 500), force_train=False):
+def load_or_train_range_model(n_iterations, T_range, comp_range, force_train=False):
     """
     Carica o addestra il RangePredictor.
 
-    NOVITÀ: Il modello ora è addestrato con T variabile!
+    Il modello viene salvato con nome che riflette il comp_range.
+    Per fine-tuning, carica automaticamente il modello del range precedente.
     """
     global range_model
 
     os.makedirs(MODELS_DIR, exist_ok=True)
 
+    # Nome file basato su comp_range
+    min_comp = comp_range[0]
+    max_comp = comp_range[1]
+    model_path = os.path.join(MODELS_DIR, f'range_predictor_{min_comp}_{max_comp}.pth')
+
     range_model = RangePredictor().to(device)
 
-    if os.path.exists(RANGE_MODEL_PATH) and not force_train:
-        range_model.load_state_dict(torch.load(RANGE_MODEL_PATH, map_location=device))
-        print(f"[RangePredictor] Caricato da {RANGE_MODEL_PATH}")
+    if os.path.exists(model_path) and not force_train:
+        range_model.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"[RangePredictor] Caricato da {model_path}")
     else:
-        print(f"[RangePredictor] Training ({n_iterations} iterazioni, T in {T_range})...")
-        range_model = train_range_predictor(n_iterations=n_iterations, T_range=T_range)
-        torch.save(range_model.state_dict(), RANGE_MODEL_PATH)
-        print(f"[RangePredictor] Salvato in {RANGE_MODEL_PATH}")
+        # Cerca modello precedente per fine-tuning
+        pretrained_model = None
+
+        if max_comp > 15:
+            prev_ranges = [(2, 15), (2, 20), (2, 30), (2, 50), (2, 100)]
+            for prev_min, prev_max in prev_ranges:
+                if prev_max < max_comp:
+                    candidate = os.path.join(MODELS_DIR, f'range_predictor_{prev_min}_{prev_max}.pth')
+                    if os.path.exists(candidate):
+                        pretrained_model = RangePredictor().to(device)
+                        pretrained_model.load_state_dict(torch.load(candidate, map_location=device))
+                        print(f"[RangePredictor] Fine-tuning da {candidate}")
+
+        print(f"[RangePredictor] Training ({n_iterations} iter, T={T_range}, comp={comp_range})...")
+        range_model = train_range_predictor(
+            n_iterations=n_iterations,
+            T_range=T_range,
+            comp_range=comp_range,
+            pretrained_model=pretrained_model
+        )
+        torch.save(range_model.state_dict(), model_path)
+        print(f"[RangePredictor] Salvato in {model_path}")
 
     return range_model
 
 
-def load_or_train_sample_model(n_iterations=200, force_train=False):
-    global sample_model, range_model
+def load_or_train_sample_model(n_iterations, comp_range, T=100,
+                               target_top_events=100,
+                               force_train=False):
+    """
+    Carica o addestra il SamplePredictor.
+    Fine-tuning automatico per comp_range più grandi.
+    """
+    global sample_model
 
-    if range_model is None:
-        load_or_train_range_model()
+    os.makedirs(MODELS_DIR, exist_ok=True)
+
+    min_comp, max_comp = comp_range
+    model_path = os.path.join(MODELS_DIR, f'sample_predictor_{min_comp}_{max_comp}.pth')
 
     sample_model = SamplePredictor().to(device)
 
-    if os.path.exists(SAMPLE_MODEL_PATH) and not force_train:
-        sample_model.load_state_dict(torch.load(SAMPLE_MODEL_PATH, map_location=device))
-        print(f"[SamplePredictor] Caricato da {SAMPLE_MODEL_PATH}")
+    if os.path.exists(model_path) and not force_train:
+        sample_model.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"[SamplePredictor] Caricato da {model_path}")
     else:
-        print(f"[SamplePredictor] Training ({n_iterations} iterazioni)...")
-        sample_model = train_sample_predictor(range_model, n_iterations=n_iterations)
-        if isinstance(sample_model, tuple):
-            sample_model = sample_model[0]
-        torch.save(sample_model.state_dict(), SAMPLE_MODEL_PATH)
-        print(f"[SamplePredictor] Salvato in {SAMPLE_MODEL_PATH}")
+        # Cerca modello precedente per fine-tuning
+        pretrained_model = None
+
+        if max_comp > 15:
+            prev_ranges = [(2, 15), (2, 20), (2, 30), (2, 50), (2, 100)]
+            for prev_min, prev_max in prev_ranges:
+                if prev_max < max_comp:
+                    candidate = os.path.join(MODELS_DIR, f'sample_predictor_{prev_min}_{prev_max}.pth')
+                    if os.path.exists(candidate):
+                        pretrained_model = SamplePredictor().to(device)
+                        pretrained_model.load_state_dict(torch.load(candidate, map_location=device))
+                        print(f"[SamplePredictor] Fine-tuning da {candidate}")
+
+        print(f"[SamplePredictor] Training ({n_iterations} iter, comp={comp_range})...")
+        sample_model = train_sample_predictor(
+            range_model=range_model,
+            n_iterations=n_iterations,
+            T=T,
+            target_top_events=target_top_events,
+            comp_range=comp_range,
+            pretrained_model=pretrained_model
+        )
+        torch.save(sample_model.state_dict(), model_path)
+        print(f"[SamplePredictor] Salvato in {model_path}")
 
     return sample_model
 
-
-def initialize_models(n_iter_range=300, n_iter_sample=200, T_range=(10, 500), force_train=False):
+def initialize_models(n_iter_range, n_iter_sample, T_range, comp_range, force_train=False):
     """
     Inizializza entrambi i modelli.
 
@@ -73,20 +122,15 @@ def initialize_models(n_iter_range=300, n_iter_sample=200, T_range=(10, 500), fo
         T_range: (T_min, T_max) per training RangePredictor
         force_train: se True, riaddestra anche se esistono file salvati
     """
-    load_or_train_range_model(n_iter_range, T_range, force_train)
-    load_or_train_sample_model(n_iter_sample, force_train)
+    load_or_train_range_model(n_iter_range, T_range, comp_range, force_train)
+    load_or_train_sample_model(n_iter_sample, comp_range, force_train)
 
-
-def get_ranges(ft, T=100, T_max=500):
+def get_ranges(ft, T, T_max):
     """
     Ottiene i range α/β per un fault tree a un dato T.
 
     NOVITÀ: Ora richiede T come parametro!
     """
-    global range_model
-
-    if range_model is None:
-        load_or_train_range_model()
 
     range_model.eval()
     data = ft.to_pyg_data().to(device)
@@ -103,7 +147,6 @@ def get_ranges(ft, T=100, T_max=500):
     print(f"   Beta:  [{beta_min:.2f}, {beta_max:.2f}]")
 
     return alpha_min, alpha_max, beta_min, beta_max
-
 
 def get_samples(ft):
     global sample_model
@@ -124,7 +167,6 @@ def get_samples(ft):
     print(f"   N_mc: {N_mc}")
 
     return N_is, N_mc
-
 
 def run_pipeline(ft, topology_name, T=100, T_max=500):
     """
@@ -155,43 +197,31 @@ def run_pipeline(ft, topology_name, T=100, T_max=500):
     run_overall_test(ft, fault_tree_logic, ranges_dict, N_is, N_mc, topology_name, T)
 
 
-def run_cdf_pipeline(ft_data, t_max=500, t_step=10):
-    """
-    Esegue l'analisi CDF completa.
-
-    Calcola P(T_fail ≤ t) per t da t_step a t_max.
-    Si ferma quando P > 10%.
-    """
-    global range_model, sample_model
-
-    if range_model is None:
-        load_or_train_range_model()
-    if sample_model is None:
-        load_or_train_sample_model()
-
-    results = run_cdf_analysis(
-        ft_data['graph'],
-        ft_data['fault_tree'],
-        range_model,
-        topology_name=ft_data['structure'],
-        t_max=t_max,
-        t_step=t_step,
-        sample_model=sample_model
-    )
-
-    return results
-
-
 if __name__ == "__main__":
+
+    n = 30
+
+    comp_range = (2, n)
+
     initialize_models(
-        n_iter_range=1500,
-        n_iter_sample=1000,
+        n_iter_range=n * (10 ** 2),
+        n_iter_sample=n * (10 ** 2),
         T_range=(10, 500),
+        comp_range=comp_range,
         force_train=False
     )
 
-    iterations = 5
+    iterations = 3
 
     for iteration in range(iterations):
-        ft_data = generate_simple_fault_tree()
-        results = run_cdf_pipeline(ft_data, t_max=500, t_step=5)
+        ft_data = generate_simple_fault_tree((22, 30))
+        results = run_cdf_analysis(
+            ft_data['graph'],
+            ft_data['fault_tree'],
+            range_model,
+            topology_name=ft_data['structure'],
+            t_max=500,
+            t_step=10,
+            sample_model=sample_model
+        )
+

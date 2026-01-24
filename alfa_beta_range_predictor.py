@@ -417,7 +417,7 @@ def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min,
     }
 
 
-def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
+def train_range_predictor(n_iterations, T_range, pretrained_model, comp_range):
     """
     Addestra il RangePredictor con T VARIABILE.
 
@@ -431,7 +431,13 @@ def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
     - T grande → α → 1 (poco biasing)
     """
 
-    model = RangePredictor().to(device)
+    if pretrained_model is not None:
+        model = pretrained_model.to(device)
+        print(f"[Fine-tuning] Partendo da modello pre-addestrato")
+    else:
+        model = RangePredictor().to(device)
+        print(f"[Training] Partendo da zero")
+
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     T_min, T_max = T_range
@@ -440,11 +446,12 @@ def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
     print("=" * 60)
     print("TRAINING GNN - PREDIZIONE RANGE α e β (T VARIABILE)")
     print(f"Range T: [{T_min}, {T_max}]")
+    print(f"Range componenti: [{comp_range}]")
     print("=" * 60)
 
     for iteration in range(n_iterations):
         # 1. Genera fault tree
-        ft_data = generate_simple_fault_tree()
+        ft_data = generate_simple_fault_tree(comp_range)
         pyg_data = ft_data['graph'].to_pyg_data().to(device)
 
         # 2. Campiona T casuale
@@ -495,6 +502,9 @@ def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
             cv = eval_results['cv']
             top_rate = eval_results['top_rate']
 
+            n_comps = len(ft_data['lambda_'])
+            complexity_factor = n_comps ** 2.0
+
             dist_alpha = (avg_alpha - target_alpha) ** 2
             dist_beta = (avg_beta - target_beta) ** 2
 
@@ -517,16 +527,16 @@ def train_range_predictor(n_iterations=100, T_range=(10, 500), verbose=True):
 
                 # 2. CALCOLO PENALITÀ ALPHA E BETA
                 # Usiamo un peso che cresce col tempo per forzare l'asintoto a 1.0
-                penalty_alpha = dist_alpha * (15.0 + 30.0 * T_normalized)
+                penalty_alpha = dist_alpha * (15.0 + 30.0 * T_normalized) * complexity_factor
 
-                penalty_beta = dist_beta * (15.0 + 30.0 * T_normalized)
+                penalty_beta = dist_beta * (15.0 + 30.0 * T_normalized) * complexity_factor
 
                 # 3. PENALITÀ AMPIEZZA RANGE
                 current_beta_range = b_max - b_min
                 target_range = 1.0
                 penalty_range = 0.0
                 if current_beta_range > target_range:
-                    penalty_range = ((current_beta_range - target_range) ** 2) * 10.0
+                    penalty_range = ((current_beta_range - target_range) ** 2) * 5.0
 
                 # 4. ASSEMBLAGGIO FINALE
                 reward = base_reward - penalty_alpha - penalty_beta - penalty_range
