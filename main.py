@@ -199,7 +199,7 @@ def run_pipeline(ft, topology_name, T=100, T_max=500):
 
 if __name__ == "__main__":
 
-    n = 30
+    n = 45
 
     comp_range = (2, n)
 
@@ -211,10 +211,10 @@ if __name__ == "__main__":
         force_train=False
     )
 
-    iterations = 3
+    iterations = 1
 
     for iteration in range(iterations):
-        ft_data = generate_simple_fault_tree((22, 30))
+        ft_data = generate_simple_fault_tree((30, 45))
         results = run_cdf_analysis(
             ft_data['graph'],
             ft_data['fault_tree'],

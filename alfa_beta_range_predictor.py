@@ -207,17 +207,17 @@ def _choose_gate_type(n_children):
     altrimenti i top events sono troppo rari.
     """
     if n_children >= 3:
-        # 10% AND, 75% OR, 15% KooN
+        # 20% AND, 65% OR, 15% KooN
         r = random.random()
-        if r < 0.10:
+        if r < 0.2:
             return 'AND'
-        elif r < 0.85:
+        elif r < 0.65:
             return 'OR'
         else:
             return 'KooN'
     else:
-        # 20% AND, 80% OR
-        return 'AND' if random.random() < 0.2 else 'OR'
+        # 30% AND, 70% OR
+        return 'AND' if random.random() < 0.3 else 'OR'
 
 
 def _add_koon_gate(graph, children, k):

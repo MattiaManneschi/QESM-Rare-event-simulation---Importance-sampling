@@ -166,8 +166,8 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         # 3. Configura ExternalConfig per questo t con range specifici
         config = ExternalConfig(lambda_, mu_, fault_tree_logic, ranges_dict, T=t)
         config.epochs = training_epochs
-        config.n_samples = n_comps*20
-        config.n_trajectories = n_comps*20
+        config.n_samples = 500
+        config.n_trajectories = 500
 
         # 4. Addestra MLP da zero per questo t
         model = train_mlp_cross_entropy(config)
