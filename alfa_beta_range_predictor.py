@@ -207,16 +207,14 @@ def _choose_gate_type(n_children):
     altrimenti i top events sono troppo rari.
     """
     if n_children >= 3:
-        # 20% AND, 65% OR, 15% KooN
         r = random.random()
         if r < 0.2:
             return 'AND'
-        elif r < 0.65:
+        elif r < 0.6:
             return 'OR'
         else:
             return 'KooN'
     else:
-        # 30% AND, 70% OR
         return 'AND' if random.random() < 0.3 else 'OR'
 
 

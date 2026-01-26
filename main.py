@@ -211,7 +211,7 @@ if __name__ == "__main__":
         force_train=False
     )
 
-    iterations = 1
+    iterations = 3
 
     for iteration in range(iterations):
         ft_data = generate_simple_fault_tree((30, 45))
