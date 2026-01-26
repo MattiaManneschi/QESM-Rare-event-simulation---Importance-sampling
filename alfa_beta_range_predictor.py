@@ -208,9 +208,9 @@ def _choose_gate_type(n_children):
     """
     if n_children >= 3:
         r = random.random()
-        if r < 0.2:
+        if r < 0.3:
             return 'AND'
-        elif r < 0.6:
+        elif r < 0.5:
             return 'OR'
         else:
             return 'KooN'

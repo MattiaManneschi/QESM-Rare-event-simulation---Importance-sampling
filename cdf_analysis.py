@@ -168,10 +168,9 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         config.epochs = training_epochs
         if n_comps*17 < 500:
             config.n_samples = n_comps*17
-            config.n_trajectories = n_comps*10
         else:
             config.n_samples = 500
-            config.n_trajectories = 100
+        config.n_trajectories = 100
 
         # 4. Addestra MLP da zero per questo t
         model = train_mlp_cross_entropy(config)
@@ -262,10 +261,6 @@ def plot_cdf(results, topology_name="FaultTree", save_path=None):
 def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None):
     """
     Plotta l'evoluzione di α e β nel tempo per ogni componente.
-
-    Comportamento atteso (dal ricercatore):
-    - α, β molto alti per t piccoli
-    - Convergono verso 1 per t grandi
     """
     t = np.array(results['t'])
     alphas = results['alphas']
@@ -292,7 +287,7 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
     ax1.text(0.98, 0.98, f'{n_comps} componenti', transform=ax1.transAxes,
              ha='right', va='top', fontsize=10, style='italic',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    ax1.legend(loc='lower right', fontsize=9)  # Solo per "α = 1"
+    ax1.legend(loc='lower right', fontsize=9)
 
     # β(t)
     ax2 = axes[1]
@@ -308,9 +303,10 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
     ax2.text(0.98, 0.98, f'{n_comps} componenti', transform=ax2.transAxes,
              ha='right', va='top', fontsize=10, style='italic',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    ax2.legend(loc='lower right', fontsize=9)  # Solo per "β = 1"
+    ax2.legend(loc='lower right', fontsize=9)
 
-    plt.tight_layout()
+    # Usa constrained_layout invece di tight_layout
+    fig.set_constrained_layout(True)
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
