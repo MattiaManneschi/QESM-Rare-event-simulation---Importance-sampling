@@ -271,35 +271,49 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
     alphas = results['alphas']
     betas = results['betas']
     comps = list(alphas.keys())
+    n_comps = len(comps)
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
+    # Colormap per distinguere i componenti
+    colors = plt.cm.viridis(np.linspace(0, 1, n_comps))
+
     # α(t)
     ax1 = axes[0]
-    for c in comps:
-        ax1.plot(t, alphas[c], 'o-', markersize=4, label=c)
+    for i, c in enumerate(comps):
+        ax1.plot(t, alphas[c], 'o-', markersize=4, color=colors[i], linewidth=1.2, alpha=0.8)
     ax1.axhline(y=1.0, color='gray', linestyle=':', linewidth=1, label='α = 1')
     ax1.set_xlabel('Tempo t', fontsize=12)
     ax1.set_ylabel('α (failure rate multiplier)', fontsize=12)
     ax1.set_title(f'Evoluzione di α nel tempo\n{topology_name}', fontsize=14)
-    ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
+
+    # Nota componenti invece di legenda
+    ax1.text(0.98, 0.98, f'{n_comps} componenti', transform=ax1.transAxes,
+             ha='right', va='top', fontsize=10, style='italic',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    ax1.legend(loc='lower right', fontsize=9)  # Solo per "α = 1"
 
     # β(t)
     ax2 = axes[1]
-    for c in comps:
-        ax2.plot(t, betas[c], 's-', markersize=4, label=c)
+    for i, c in enumerate(comps):
+        ax2.plot(t, betas[c], 's-', markersize=4, color=colors[i], linewidth=1.2, alpha=0.8)
     ax2.axhline(y=1.0, color='gray', linestyle=':', linewidth=1, label='β = 1')
     ax2.set_xlabel('Tempo t', fontsize=12)
     ax2.set_ylabel('β (repair rate multiplier)', fontsize=12)
     ax2.set_title(f'Evoluzione di β nel tempo\n{topology_name}', fontsize=14)
-    ax2.legend(loc='upper right')
     ax2.grid(True, alpha=0.3)
+
+    # Nota componenti invece di legenda
+    ax2.text(0.98, 0.98, f'{n_comps} componenti', transform=ax2.transAxes,
+             ha='right', va='top', fontsize=10, style='italic',
+             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    ax2.legend(loc='lower right', fontsize=9)  # Solo per "β = 1"
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150)
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Salvato: {save_path}")
 
     plt.close(fig)
