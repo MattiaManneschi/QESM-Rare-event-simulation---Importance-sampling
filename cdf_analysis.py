@@ -168,10 +168,10 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         config.epochs = training_epochs
         if n_comps*17 < 500:
             config.n_samples = n_comps*17
-            config.n_trajectories = n_comps*17
+            config.n_trajectories = n_comps*10
         else:
             config.n_samples = 500
-            config.n_trajectories = 500
+            config.n_trajectories = 100
 
         # 4. Addestra MLP da zero per questo t
         model = train_mlp_cross_entropy(config)
