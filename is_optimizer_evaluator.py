@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 from collections import defaultdict
+from pathos.multiprocessing import ProcessPool
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -76,7 +77,7 @@ class ExternalConfig:
         self.T = T
 
         # Parametri ottimizzazione
-        self.rho = 0.15
+        self.rho = 0.3
         self.alpha_std = 0.3
         self.beta_std = 0.05
         self.max_grad_norm = 0.5
@@ -161,6 +162,22 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
 
     return result
 
+
+def _simulate_sample_batch(args):
+    """Funzione helper per eseguire il batch di traiettorie in parallelo."""
+    lambda_, mu_, a_dict, b_dict, T, fault_tree, n_trajectories = args
+
+    # Esegue le traiettorie per questo specifico set di parametri
+    trajs = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T, fault_tree)
+             for _ in range(n_trajectories)]
+
+    # Estrae i log-weights e i pesi reali
+    traj_logs = [tr["log_w"] for tr in trajs if tr["top"]]
+    weights = [math.exp(tr["log_w"]) if tr["top"] else 0.0 for tr in trajs]
+
+    return traj_logs, weights
+
+
 def train_mlp_cross_entropy(config):
     lambda_ = config.lambda_
     mu_ = config.mu_
@@ -180,7 +197,6 @@ def train_mlp_cross_entropy(config):
     loss_hist = []
     prob_estimates = []
 
-    # Input fittizio per la rete (media degli one-hot vectors)
     input_tensor = torch.eye(n).mean(dim=0).unsqueeze(0).to(device)
 
     print("=" * 60)
@@ -188,65 +204,57 @@ def train_mlp_cross_entropy(config):
     print("=" * 60)
 
     for epoch in range(config.epochs):
-        # La rete predice le medie delle distribuzioni
+
+        if epoch == 25:
+            config.n_samples = 1000
+
         alpha_mu, beta_mu = model(input_tensor)
 
         samples_data = []
-        log_performances = []
-        all_weights_epoch = []
+        worker_tasks = []
 
-        # Campiona n_samples configurazioni di parametri
+        # --- PREPARAZIONE DEI SAMPLES ---
         for s in range(config.n_samples):
-            # Crea distribuzioni normali centrate sui valori predetti
             dist_a = torch.distributions.Normal(alpha_mu, config.alpha_std)
             dist_b = torch.distributions.Normal(beta_mu, config.beta_std)
 
-            # Campiona e clampa nei range validi
             a_sampled = dist_a.sample()
             b_sampled = dist_b.sample()
 
-            a_dict = {c: torch.clamp(a_sampled[0, i],
-                                      config.alpha_min,
-                                      config.alpha_max).item()
+            a_dict = {c: torch.clamp(a_sampled[0, i], config.alpha_min, config.alpha_max).item()
                       for i, c in enumerate(comps)}
-            b_dict = {c: torch.clamp(b_sampled[0, i],
-                                      config.beta_min,
-                                      config.beta_max).item()
+            b_dict = {c: torch.clamp(b_sampled[0, i], config.beta_min, config.beta_max).item()
                       for i, c in enumerate(comps)}
 
-            # Simula traiettorie con questi parametri
-            trajs = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T, config.fault_tree)
-                     for _ in range(config.n_trajectories)]
+            # Memorizziamo i dati del sample per il calcolo della loss dopo
+            samples_data.append({
+                'a_sampled': a_sampled, 'b_sampled': b_sampled,
+                'dist_a': dist_a, 'dist_b': dist_b,
+                'a_dict': a_dict, 'b_dict': b_dict
+            })
 
-            # Raccogli i log-weights delle traiettorie che hanno raggiunto il top event
-            traj_logs = [tr["log_w"] for tr in trajs if tr["top"]]
+            worker_tasks.append((lambda_, mu_, a_dict, b_dict, T, config.fault_tree, config.n_trajectories))
 
-            weights = [math.exp(tr["log_w"]) if tr["top"] else 0.0 for tr in trajs]
+        log_performances = []
+        all_weights_epoch = []
+
+        with ProcessPool(nodes=16) as pool:
+            results = pool.map(_simulate_sample_batch, worker_tasks)
+
+        for i, (traj_logs, weights) in enumerate(results):
             all_weights_epoch.extend(weights)
+            samples_data[i]['n_top'] = len(traj_logs)
 
-            # Calcola la performance del campione (log-sum-exp per stabilita'  numerica)
-            # Performance = media dei pesi IS = stima della probabilitÃ
             if traj_logs:
                 m_log = max(traj_logs)
                 lse = m_log + math.log(sum(math.exp(lw - m_log) for lw in traj_logs))
                 log_perf = lse - math.log(config.n_trajectories)
                 log_performances.append(log_perf)
             else:
-                log_performances.append(-1e10) # Penalita'  se nessun top event
-
-            samples_data.append({
-                'a_sampled': a_sampled,
-                'b_sampled': b_sampled,
-                'dist_a': dist_a,
-                'dist_b': dist_b,
-                'a_dict': a_dict,
-                'b_dict': b_dict,
-                'n_top': len(traj_logs)
-            })
+                log_performances.append(-1e10)
 
         logger.log_weights(all_weights_epoch, epoch)
 
-        # Cross-Entropy Method: seleziona il top rho% come "elite"
         sorted_idx = sorted(range(len(log_performances)),
                             key=lambda i: log_performances[i], reverse=True)
         n_elite = max(1, int(config.rho * config.n_samples))
@@ -257,24 +265,19 @@ def train_mlp_cross_entropy(config):
             elite_logs = torch.tensor([log_performances[i] for i in elite_indices],
                                       device=device)
 
-            # Pesi softmax per dare piÃ¹ importanza agli elite migliori
             with torch.no_grad():
                 shifted_logs = elite_logs - torch.max(elite_logs)
                 weights = torch.softmax(shifted_logs, dim=0)
 
-            # Policy Gradient Loss: aumenta la probabilitÃ  degli elite
-            # loss = -Î£ weight_i * log Ï€(params_i | Î¸)
             policy_loss = 0.0
             entropy_bonus = 0.0
 
             for i, idx in enumerate(elite_indices):
                 sample = samples_data[idx]
-                # log Ï€(alpha, beta | Î¸) = log_prob della distribuzione normale
                 log_p_a = sample['dist_a'].log_prob(sample['a_sampled']).sum()
                 log_p_b = sample['dist_b'].log_prob(sample['b_sampled']).sum()
                 policy_loss -= weights[i] * (log_p_a + log_p_b)
 
-                # Entropy bonus per incoraggiare l'esplorazione
                 entropy_bonus += sample['dist_a'].entropy().sum()
                 entropy_bonus += sample['dist_b'].entropy().sum()
 
@@ -283,29 +286,26 @@ def train_mlp_cross_entropy(config):
 
             optimizer.zero_grad()
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                            max_norm=config.max_grad_norm)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.max_grad_norm)
             optimizer.step()
 
             loss_val = total_loss.item()
             loss_hist.append(loss_val)
             scheduler.step(loss_val)
 
-            current_prob = np.mean([w for w in all_weights_epoch if w > 0]) if any(w > 0 for w in all_weights_epoch) else 0
+            current_prob = np.mean([w for w in all_weights_epoch if w > 0]) if any(
+                w > 0 for w in all_weights_epoch) else 0
             prob_estimates.append(current_prob)
 
             if epoch % 5 == 0:
-                a_dict = {c: alpha_mu[0, i].item() for i, c in enumerate(comps)}
-                b_dict = {c: beta_mu[0, i].item() for i, c in enumerate(comps)}
-
-                logger.print_epoch_summary(
-                    epoch, loss_val, a_dict, b_dict,
-                    len(elite_indices), config.n_samples
-                )
+                a_dict_sum = {c: alpha_mu[0, i].item() for i, c in enumerate(comps)}
+                b_dict_sum = {c: beta_mu[0, i].item() for i, c in enumerate(comps)}
+                logger.print_epoch_summary(epoch, loss_val, a_dict_sum, b_dict_sum, len(elite_indices),
+                                           config.n_samples)
         else:
             loss_hist.append(0.0)
             prob_estimates.append(0.0)
-            print(f"Epoch {epoch:3d} | Nessun elite trovato - aumentare alpha?")
+            print(f"Epoch {epoch:3d} | Nessun elite trovato")
 
         for i, c in enumerate(comps):
             alpha_hist[c].append(alpha_mu[0, i].item())
