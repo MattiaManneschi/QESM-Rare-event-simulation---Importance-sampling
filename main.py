@@ -43,7 +43,7 @@ def load_or_train_range_model(n_iterations, T_range, comp_range, force_train=Fal
         pretrained_model = None
 
         if max_comp > 15:
-            prev_ranges = [(2, 15), (2, 20), (2, 30), (2, 50), (2, 100)]
+            prev_ranges = [(2, 15), (15, 30), (30, 45)]
             for prev_min, prev_max in prev_ranges:
                 if prev_max < max_comp:
                     candidate = os.path.join(MODELS_DIR, f'range_predictor_{prev_min}_{prev_max}.pth')
@@ -89,7 +89,7 @@ def load_or_train_sample_model(n_iterations, comp_range, T=100,
         pretrained_model = None
 
         if max_comp > 15:
-            prev_ranges = [(2, 15), (2, 20), (2, 30), (2, 50), (2, 100)]
+            prev_ranges = [(2, 15), (15, 30), (30, 45)]
             for prev_min, prev_max in prev_ranges:
                 if prev_max < max_comp:
                     candidate = os.path.join(MODELS_DIR, f'sample_predictor_{prev_min}_{prev_max}.pth')
@@ -199,22 +199,25 @@ def run_pipeline(ft, topology_name, T=100, T_max=500):
 
 if __name__ == "__main__":
 
-    n = 45
+    n_1 = 30
+    n_2 = 45
 
-    comp_range = (2, n)
+    comp_range = (n_1, n_2)
 
     initialize_models(
-        n_iter_range=n * (10 ** 2),
-        n_iter_sample=n * (10 ** 2),
+        n_iter_range=(n_2-n_1) * (10 ** 2),
+        n_iter_sample=(n_2-n_1) * (10 ** 2),
         T_range=(10, 500),
         comp_range=comp_range,
         force_train=False
     )
 
-    iterations = 3
+    iterations = 1
+
 
     for iteration in range(iterations):
         ft_data = generate_simple_fault_tree((30, 45))
+        print("TOPOLOGIA ALBERO: ", ft_data['structure'])
         results = run_cdf_analysis(
             ft_data['graph'],
             ft_data['fault_tree'],
@@ -224,4 +227,5 @@ if __name__ == "__main__":
             t_step=10,
             sample_model=sample_model
         )
+
 
