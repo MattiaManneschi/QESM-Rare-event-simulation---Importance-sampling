@@ -204,10 +204,6 @@ def train_mlp_cross_entropy(config):
     print("=" * 60)
 
     for epoch in range(config.epochs):
-
-        if epoch == 25:
-            config.n_samples = 1000
-
         alpha_mu, beta_mu = model(input_tensor)
 
         samples_data = []

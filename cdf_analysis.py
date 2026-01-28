@@ -166,10 +166,8 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         # 3. Configura ExternalConfig per questo t con range specifici
         config = ExternalConfig(lambda_, mu_, fault_tree_logic, ranges_dict, T=t)
         config.epochs = training_epochs
-        if n_comps*17 < 500:
-            config.n_samples = n_comps*17
-        else:
-            config.n_samples = 500
+        n_and = sum(1 for n in ft.nodes if n.get('type') == 'AND')
+        config.n_samples = n_comps*n_and
         config.n_trajectories = 100
 
         # 4. Addestra MLP da zero per questo t

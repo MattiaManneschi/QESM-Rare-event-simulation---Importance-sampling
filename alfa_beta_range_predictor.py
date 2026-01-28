@@ -208,14 +208,14 @@ def _choose_gate_type(n_children):
     """
     if n_children >= 3:
         r = random.random()
-        if r < 0.3:
+        if r < 0.2:
             return 'AND'
-        elif r < 0.5:
+        elif r < 0.6:
             return 'OR'
         else:
             return 'KooN'
     else:
-        return 'AND' if random.random() < 0.3 else 'OR'
+        return 'AND' if random.random() < 0.2 else 'OR'
 
 
 def _add_koon_gate(graph, children, k):

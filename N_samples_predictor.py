@@ -231,10 +231,7 @@ def get_predicted_samples(model, pyg_data):
         n_is = int(10 ** log_n[0, 0].item())
         n_mc = int(10 ** log_n[0, 1].item())
 
-        # Liberalizziamo i limiti:
-        # Per IS scendiamo a 200 (se l'albero è molto facile)
-        # Per MC alziamo a 1000 (sotto i quali la stima MC è rumore puro)
-        n_is = max(200, min(100000, n_is))
-        n_mc = max(1000, min(100000, n_mc))
+        n_is = max(1000, min(500000, n_is))
+        n_mc = max(1000, min(1000000, n_mc))
 
         return n_is, n_mc
