@@ -1,3 +1,12 @@
+"""
+is_optimizer_evaluator.py - VERSIONE CON α, β PER COMPONENTE
+
+Modifiche principali:
+1. AlphaBetaMLP ora usa criticità per scalare i range per componente
+2. ExternalConfig accetta ranges per componente
+3. Training usa range specifici per ogni componente
+"""
+
 from datetime import datetime
 import random
 import math
@@ -8,16 +17,27 @@ import numpy as np
 from collections import defaultdict
 from pathos.multiprocessing import ProcessPool
 
+# Import criticità
+from component_criticality import (
+    compute_component_criticality,
+    get_alpha_multipliers,
+    get_beta_multipliers
+)
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 class AlphaBetaMLP(nn.Module):
     """
     Rete neurale che predice i parametri di biasing (alpha, beta) per ogni componente.
+
+    NOVITÀ: Usa range DIVERSI per ogni componente basati sulla criticità.
     """
 
     def __init__(self, n_components, config):
         super(AlphaBetaMLP, self).__init__()
         self.config = config
+        self.n_components = n_components
 
         self.net = nn.Sequential(
             nn.Linear(n_components, 128),
@@ -37,10 +57,46 @@ class AlphaBetaMLP(nn.Module):
         out = self.net(x)
         alpha_raw, beta_raw = torch.chunk(out, 2, dim=-1)
 
-        alpha = torch.sigmoid(alpha_raw) * (self.config.alpha_max - self.config.alpha_min) + self.config.alpha_min
-        beta = torch.sigmoid(beta_raw) * (self.config.beta_max - self.config.beta_min) + self.config.beta_min
+        # Usa range per componente se disponibili
+        if hasattr(self.config, 'alpha_ranges_per_comp') and self.config.alpha_ranges_per_comp:
+            alpha = self._apply_per_component_range(alpha_raw, self.config.alpha_ranges_per_comp, 'alpha')
+            beta = self._apply_per_component_range(beta_raw, self.config.beta_ranges_per_comp, 'beta')
+        else:
+            # Fallback: range globali
+            alpha = torch.sigmoid(alpha_raw) * (self.config.alpha_max - self.config.alpha_min) + self.config.alpha_min
+            beta = torch.sigmoid(beta_raw) * (self.config.beta_max - self.config.beta_min) + self.config.beta_min
 
         return alpha, beta
+
+    def _apply_per_component_range(self, raw, ranges_dict, param_type):
+        """
+        Applica range specifici per ogni componente.
+
+        Args:
+            raw: tensor [batch, n_components] con valori raw
+            ranges_dict: dict {comp_name: (min, max)}
+            param_type: 'alpha' o 'beta'
+        """
+        batch_size = raw.shape[0]
+        result = torch.zeros_like(raw)
+
+        comps = self.config.component_names
+
+        for i, comp in enumerate(comps):
+            if comp in ranges_dict:
+                p_min, p_max = ranges_dict[comp]
+            else:
+                # Fallback
+                if param_type == 'alpha':
+                    p_min, p_max = self.config.alpha_min, self.config.alpha_max
+                else:
+                    p_min, p_max = self.config.beta_min, self.config.beta_max
+
+            # Sigmoid scaling nel range [p_min, p_max]
+            result[:, i] = torch.sigmoid(raw[:, i]) * (p_max - p_min) + p_min
+
+        return result
+
 
 class DiagnosticLogger:
     def __init__(self):
@@ -67,14 +123,32 @@ class DiagnosticLogger:
     def print_epoch_summary(self, epoch, loss, alpha_dict, beta_dict, n_elite, n_samples):
         print(f"Epoch {epoch:3d} | Loss: {loss:.4f} | Elite: {n_elite}/{n_samples}")
 
-class ExternalConfig:
-    """Configurazione per il training IS con range esterni."""
 
-    def __init__(self, lambda_, mu_, fault_tree_logic, ranges, T=100):
+class ExternalConfig:
+    """
+    Configurazione per il training IS con range esterni.
+
+    NOVITÀ: Supporta range per componente basati sulla criticità.
+    """
+
+    def __init__(self, lambda_, mu_, fault_tree_logic, ranges, T=100,
+                 graph=None, use_component_criticality=True):
+        """
+        Args:
+            lambda_, mu_: dizionari dei parametri
+            fault_tree_logic: funzione booleana del fault tree
+            ranges: dict con 'alpha': (min, max), 'beta': (min, max)
+            T: tempo di missione
+            graph: FaultTreeGraph (necessario per criticità)
+            use_component_criticality: se True, calcola range per componente
+        """
         self.lambda_ = lambda_
         self.mu_ = mu_
         self.fault_tree = fault_tree_logic
         self.T = T
+
+        # Lista ordinata dei componenti
+        self.component_names = list(lambda_.keys())
 
         # Parametri ottimizzazione
         self.rho = 0.3
@@ -84,7 +158,7 @@ class ExternalConfig:
         self.entropy_coef = 0.01
         self.learning_rate = 0.005
 
-        # Range predetti dal GNN
+        # Range base dal GNN
         self.alpha_min, self.alpha_max = ranges['alpha']
         self.beta_min, self.beta_max = ranges['beta']
 
@@ -93,49 +167,69 @@ class ExternalConfig:
         self.n_samples = 500
         self.epochs = 30
 
+        # Range per componente (NOVITÀ)
+        self.alpha_ranges_per_comp = None
+        self.beta_ranges_per_comp = None
+
+        if use_component_criticality and graph is not None:
+            self._compute_per_component_ranges(graph)
+
+    def _compute_per_component_ranges(self, graph):
+        """
+        Calcola range α, β specifici per ogni componente usando la criticità.
+        """
+        criticality = compute_component_criticality(graph)
+
+        self.alpha_ranges_per_comp = get_alpha_multipliers(
+            criticality, self.alpha_min, self.alpha_max
+        )
+        self.beta_ranges_per_comp = get_beta_multipliers(
+            criticality, self.beta_min, self.beta_max
+        )
+
+        self.criticality = criticality
+
+
 def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
+    """
+    Simula una traiettoria CTMC con Importance Sampling.
+
+    NOTA: alpha e beta sono già dizionari per componente.
+    """
     t = 0.0
-    state = {i: 0 for i in lambda_} # Tutti i componenti partono funzionanti (0)
+    state = {i: 0 for i in lambda_}
     log_w = 0.0
     top_event_hit = False
     n_transitions = 0
 
     while t < T:
-        # Calcola i tassi di transizione originali e biased per ogni componente
         rates_orig = {}
         rates_is = {}
 
         for i in lambda_:
-            if state[i] == 0: # Componente funzionante â†’ puÃ² guastarsi
+            if state[i] == 0:
                 rates_orig[i] = lambda_[i]
-                rates_is[i] = lambda_[i] * alpha[i] # Accelera guasti
-            else: # Componente guasto â†’ puÃ² essere riparato
+                rates_is[i] = lambda_[i] * alpha[i]
+            else:
                 rates_orig[i] = mu_[i]
-                rates_is[i] = mu_[i] * beta[i]  # Rallenta riparazioni
+                rates_is[i] = mu_[i] * beta[i]
 
-        R_orig = sum(rates_orig.values()) # Tasso totale originale
-        R_is = sum(rates_is.values()) # Tasso totale IS
+        R_orig = sum(rates_orig.values())
+        R_is = sum(rates_is.values())
 
         if R_is <= 0:
             break
 
-        # Tempo di holding: esponenziale con rate R_is
         dt = random.expovariate(R_is)
 
         if t + dt > T:
-            # Correzione per il tempo residuo fino a T
             log_w += (R_is - R_orig) * (T - t)
             break
 
-        # Aggiorna likelihood ratio per il tempo di holding
-        # P(dt|orig) / P(dt|IS) = (R_orig * exp(-R_orig*dt)) / (R_is * exp(-R_is*dt))
-        # log di questo = log(R_orig/R_is) + (R_is - R_orig)*dt
-        # Ma la parte log(R_orig/R_is) si compensa con la scelta della transizione
         log_w += (R_is - R_orig) * dt
         t += dt
         n_transitions += 1
 
-        # Scelta del componente che transisce (proporzionale ai tassi IS)
         comps = list(lambda_.keys())
         p_is = [rates_is[c] / R_is for c in comps]
         chosen_comp = random.choices(comps, weights=p_is)[0]
@@ -143,11 +237,8 @@ def simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree):
         rate_orig_chosen = rates_orig[chosen_comp]
         rate_is_chosen = rates_is[chosen_comp]
 
-        # Correzione per la scelta della transizione
-        # P(scegliere c | orig) / P(scegliere c | IS)
         log_w += math.log(rate_orig_chosen / rate_is_chosen)
 
-        # Esegui la transizione (toggle dello stato)
         state[chosen_comp] = 1 - state[chosen_comp]
 
         if fault_tree(state):
@@ -167,18 +258,21 @@ def _simulate_sample_batch(args):
     """Funzione helper per eseguire il batch di traiettorie in parallelo."""
     lambda_, mu_, a_dict, b_dict, T, fault_tree, n_trajectories = args
 
-    # Esegue le traiettorie per questo specifico set di parametri
     trajs = [simulate_CTMC(lambda_, mu_, a_dict, b_dict, T, fault_tree)
              for _ in range(n_trajectories)]
 
-    # Estrae i log-weights e i pesi reali
     traj_logs = [tr["log_w"] for tr in trajs if tr["top"]]
     weights = [math.exp(tr["log_w"]) if tr["top"] else 0.0 for tr in trajs]
 
     return traj_logs, weights
 
 
-def train_mlp_cross_entropy(config):
+def train_mlp_cross_entropy(config, verbose=True):
+    """
+    Addestra l'MLP con Cross-Entropy Method.
+
+    NOVITÀ: Usa range per componente se disponibili.
+    """
     lambda_ = config.lambda_
     mu_ = config.mu_
     T = config.T
@@ -199,9 +293,10 @@ def train_mlp_cross_entropy(config):
 
     input_tensor = torch.eye(n).mean(dim=0).unsqueeze(0).to(device)
 
-    print("=" * 60)
-    print("TRAINING MLP - IS VS MC")
-    print("=" * 60)
+    if verbose:
+        print("=" * 60)
+        print("TRAINING MLP - IS VS MC")
+        print("=" * 60)
 
     for epoch in range(config.epochs):
         alpha_mu, beta_mu = model(input_tensor)
@@ -209,20 +304,29 @@ def train_mlp_cross_entropy(config):
         samples_data = []
         worker_tasks = []
 
-        # --- PREPARAZIONE DEI SAMPLES ---
         for s in range(config.n_samples):
+            # Campiona con rumore
             dist_a = torch.distributions.Normal(alpha_mu, config.alpha_std)
             dist_b = torch.distributions.Normal(beta_mu, config.beta_std)
 
             a_sampled = dist_a.sample()
             b_sampled = dist_b.sample()
 
-            a_dict = {c: torch.clamp(a_sampled[0, i], config.alpha_min, config.alpha_max).item()
-                      for i, c in enumerate(comps)}
-            b_dict = {c: torch.clamp(b_sampled[0, i], config.beta_min, config.beta_max).item()
-                      for i, c in enumerate(comps)}
+            # Clamp ai range per componente
+            a_dict = {}
+            b_dict = {}
 
-            # Memorizziamo i dati del sample per il calcolo della loss dopo
+            for i, c in enumerate(comps):
+                if config.alpha_ranges_per_comp and c in config.alpha_ranges_per_comp:
+                    a_min, a_max = config.alpha_ranges_per_comp[c]
+                    b_min, b_max = config.beta_ranges_per_comp[c]
+                else:
+                    a_min, a_max = config.alpha_min, config.alpha_max
+                    b_min, b_max = config.beta_min, config.beta_max
+
+                a_dict[c] = torch.clamp(a_sampled[0, i], a_min, a_max).item()
+                b_dict[c] = torch.clamp(b_sampled[0, i], b_min, b_max).item()
+
             samples_data.append({
                 'a_sampled': a_sampled, 'b_sampled': b_sampled,
                 'dist_a': dist_a, 'dist_b': dist_b,
@@ -293,7 +397,7 @@ def train_mlp_cross_entropy(config):
                 w > 0 for w in all_weights_epoch) else 0
             prob_estimates.append(current_prob)
 
-            if epoch % 5 == 0:
+            if verbose and epoch % 5 == 0:
                 a_dict_sum = {c: alpha_mu[0, i].item() for i, c in enumerate(comps)}
                 b_dict_sum = {c: beta_mu[0, i].item() for i, c in enumerate(comps)}
                 logger.print_epoch_summary(epoch, loss_val, a_dict_sum, b_dict_sum, len(elite_indices),
@@ -301,7 +405,8 @@ def train_mlp_cross_entropy(config):
         else:
             loss_hist.append(0.0)
             prob_estimates.append(0.0)
-            print(f"Epoch {epoch:3d} | Nessun elite trovato")
+            if verbose:
+                print(f"Epoch {epoch:3d} | Nessun elite trovato")
 
         for i, c in enumerate(comps):
             alpha_hist[c].append(alpha_mu[0, i].item())
@@ -309,10 +414,11 @@ def train_mlp_cross_entropy(config):
 
     return model
 
+
 def evaluate_model(model, config, N_is, N_mc, topology_name):
     """Valuta IS vs MC con metriche dettagliate."""
 
-    lines = []  # Buffer per salvataggio TXT
+    lines = []
 
     def log(msg):
         print(msg)
@@ -322,7 +428,6 @@ def evaluate_model(model, config, N_is, N_mc, topology_name):
     log("RISULTATI")
     log("=" * 60)
 
-    # Topologia
     lambda_ = config.lambda_
     mu_ = config.mu_
     comps = list(lambda_.keys())
@@ -332,7 +437,13 @@ def evaluate_model(model, config, N_is, N_mc, topology_name):
     log(f"-> Mu:     {[mu_[c] for c in comps]}")
     log(f"-> T:      {config.T}")
 
-    log(f"\n-> Range suggeriti:")
+    # Mostra criticità se disponibile
+    if hasattr(config, 'criticality') and config.criticality:
+        log(f"\n-> Criticità componenti:")
+        for c in sorted(config.criticality.keys()):
+            log(f"   {c}: {config.criticality[c]:.3f}")
+
+    log(f"\n-> Range suggeriti (base):")
     log(f"   Alpha: [{config.alpha_min:.2f}, {config.alpha_max:.2f}]")
     log(f"   Beta:  [{config.beta_min:.2f}, {config.beta_max:.2f}]")
 
@@ -346,7 +457,10 @@ def evaluate_model(model, config, N_is, N_mc, topology_name):
 
     log(f"\nParametri ottimizzati:")
     for c in comps:
-        log(f"  {c}: α={a_f[c]:.3f}, β={b_f[c]:.3f}")
+        crit_str = ""
+        if hasattr(config, 'criticality') and config.criticality:
+            crit_str = f" (crit={config.criticality.get(c, 0):.2f})"
+        log(f"  {c}: α={a_f[c]:.3f}, β={b_f[c]:.3f}{crit_str}")
 
     # IS
     log(f"\nEsecuzione IS ({N_is} simulazioni)...")
@@ -374,7 +488,6 @@ def evaluate_model(model, config, N_is, N_mc, topology_name):
     std_mc = np.sqrt(p_mc * (1 - p_mc) / N_mc) if p_mc > 0 else 0
     cv_mc = std_mc / p_mc if p_mc > 0 else float('inf')
 
-    # Calcola efficienza
     if var_is > 0 and var_mc > 0:
         efficiency_gain = var_mc / var_is
     elif var_is == 0 and n_top_is > 0:
@@ -384,7 +497,6 @@ def evaluate_model(model, config, N_is, N_mc, topology_name):
 
     rel_error = abs(p_is - p_mc) / p_mc * 100 if p_mc > 0 else float('inf')
 
-    # Risultati
     log("\n" + "=" * 60)
     log("RISULTATI")
     log("=" * 60)
@@ -416,7 +528,6 @@ def evaluate_model(model, config, N_is, N_mc, topology_name):
 
     log("=" * 60)
 
-    # Salva risultati TXT
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     txt_filename = f'results/evaluation_{timestamp}.txt'
     with open(txt_filename, 'w', encoding='utf-8') as f:
@@ -425,20 +536,28 @@ def evaluate_model(model, config, N_is, N_mc, topology_name):
 
     return p_is, var_is, p_mc, var_mc
 
-def run_overall_test(ft, fault_tree_logic, ranges_dict, N_is, N_mc,  topology_name, T=100):
-    lambda_dict, mu_dict = ft.get_lambda_mu()
-    config = ExternalConfig(lambda_dict, mu_dict, fault_tree_logic, ranges_dict, T)
 
-    # Training
+def run_overall_test(ft, fault_tree_logic, ranges_dict, N_is, N_mc, topology_name, T=100):
+    """
+    Esegue test completo IS vs MC.
+
+    NOVITÀ: Passa il graph per calcolare la criticità.
+    """
+    lambda_dict, mu_dict = ft.get_lambda_mu()
+
+    config = ExternalConfig(
+        lambda_dict, mu_dict, fault_tree_logic, ranges_dict, T,
+        graph=ft,  # Passa il graph per criticità
+        use_component_criticality=True
+    )
+
     model = train_mlp_cross_entropy(config)
 
-    # Usa valori default se non forniti
     if N_is is None:
         N_is = 10000
     if N_mc is None:
         N_mc = 10000
 
-    # Valutazione (stampa direttamente i risultati)
     p_is, var_is, p_mc, var_mc = evaluate_model(model, config, N_is, N_mc, topology_name)
 
     return p_is, var_is, p_mc, var_mc

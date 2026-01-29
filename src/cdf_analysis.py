@@ -1,13 +1,9 @@
 """
-Modulo per calcolare e plottare la CDF (Cumulative Distribution Function)
-della probabilità di fallimento del sistema.
+cdf_analysis.py - VERSIONE CON α, β PER COMPONENTE
 
-P(t) = P(T_fail ≤ t) = probabilità che il sistema fallisca entro il tempo t
-
-INTEGRATO con la pipeline esistente:
-- Usa RangePredictor già addestrato per ottenere i range α/β
-- Usa SamplePredictor per determinare il numero di samples ottimale
-- Per ogni t, addestra MLP e calcola P(t)
+Modifiche principali:
+- Passa il graph a ExternalConfig per calcolare criticità
+- Stampa info sulla criticità nel verbose output
 """
 
 import numpy as np
@@ -17,9 +13,9 @@ import os
 import math
 import torch
 
-
 from is_optimizer_evaluator import simulate_CTMC, ExternalConfig, train_mlp_cross_entropy
-from N_samples_predictor import SamplePredictor, get_predicted_samples
+from N_samples_predictor import get_predicted_samples
+from component_criticality import compute_component_criticality, print_criticality_analysis
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -27,13 +23,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, n_mc=2000, verbose=False):
     """
     Calcola un singolo punto della CDF usando IS e MC.
-
     Usa Self-Normalized Importance Sampling per robustezza ai pesi grandi.
-
-    Args:
-        n_is: numero samples per IS
-        n_mc: numero samples per MC
-        verbose: stampa diagnostica sui pesi
     """
     comps = list(lambda_.keys())
 
@@ -41,16 +31,12 @@ def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, 
     results_is = [simulate_CTMC(lambda_, mu_, alpha, beta, t, fault_tree_logic)
                   for _ in range(n_is)]
 
-    # Estrai log_w per tutti (non solo top events)
-    # Self-normalized IS: P = sum(w_i * I_i) / sum(w_i) dove I_i = 1 se top event
     all_log_w = [r['log_w'] for r in results_is]
     top_indicators = [1.0 if r['top'] else 0.0 for r in results_is]
 
-    # Stabilizzazione numerica: sottrai max(log_w)
     max_log_w = max(all_log_w)
     stable_weights = [math.exp(lw - max_log_w) for lw in all_log_w]
 
-    # Self-normalized IS estimate
     numerator = sum(w * ind for w, ind in zip(stable_weights, top_indicators))
     denominator = sum(stable_weights)
 
@@ -59,19 +45,14 @@ def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, 
     else:
         p_is = 0.0
 
-    # Varianza approssimata per self-normalized IS
     n_top_is = sum(top_indicators)
     if n_top_is > 0 and denominator > 0:
-        # Effective sample size
         ess = (sum(stable_weights) ** 2) / sum(w**2 for w in stable_weights)
         std_is = math.sqrt(p_is * (1 - p_is) / max(ess, 1))
     else:
         std_is = 0.0
 
-    if verbose:
-        pass  # Debug rimosso
-
-    # MC (unchanged)
+    # MC
     alpha_mc = {c: 1.0 for c in comps}
     beta_mc = {c: 1.0 for c in comps}
     results_mc = [simulate_CTMC(lambda_, mu_, alpha_mc, beta_mc, t, fault_tree_logic)
@@ -90,20 +71,22 @@ def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, 
 
 def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
                       t_max=100, t_step=5, n_samples_fallback=1000,
-                      training_epochs=30, verbose=True):
+                      training_epochs=30, verbose=True,
+                      use_component_criticality=True):
     """
     Calcola l'intera curva CDF usando la pipeline esistente.
 
     Args:
         ft: FaultTreeGraph
         fault_tree_logic: funzione booleana del fault tree
-        range_model: RangePredictor addestrato (predice range α/β per ogni t)
+        range_model: RangePredictor addestrato
         sample_model: SamplePredictor addestrato (se None, usa n_samples_fallback)
         t_max: tempo massimo
         t_step: passo temporale
         n_samples_fallback: samples se sample_model è None
         training_epochs: epoche per addestrare MLP a ogni t
         verbose: stampa progresso
+        use_component_criticality: se True, usa α, β per componente
 
     Returns:
         dict con t, p_is, p_mc, alphas, betas, etc.
@@ -112,7 +95,6 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
     comps = list(lambda_.keys())
     n_comps = len(comps)
 
-    # Prepara dati PyG base
     pyg_data = ft.to_pyg_data()
     pyg_data = pyg_data.to(device)
 
@@ -128,25 +110,33 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         'ranges_alpha': [], 'ranges_beta': []
     }
 
+    # Calcola criticità una volta sola
+    if use_component_criticality:
+        criticality = compute_component_criticality(ft)
+        if verbose:
+            print_criticality_analysis(ft, criticality)
+    else:
+        criticality = None
+
     if verbose:
         print("=" * 60)
         print("CALCOLO CURVA CDF (range adattivi per ogni t)")
         print(f"T: [{t_step}, {t_max}], step={t_step}, punti={len(t_values)}")
         print(f"SamplePredictor: {'Sì' if sample_model else 'No (fallback)'}")
+        print(f"Criticità per componente: {'Sì' if use_component_criticality else 'No'}")
         print("=" * 60)
 
     for t in t_values:
+        timestamp = datetime.now().strftime('%H:%M:%S')
         if verbose:
-            print(f"\n[T = {t:.0f}] ", end="")
+            print(f"\n[{timestamp}] [T = {t:.0f}] ", end="")
 
         # 1. Predici range α/β dalla topologia CON T
         range_model.to(device)
 
         with torch.no_grad():
-            # Passa T al RangePredictor (nuova interfaccia)
             ranges_pred, _ = range_model(pyg_data, T=t, T_max=500.0)
 
-        # Usa i range predetti dal modello (che ora considera T)
         ranges_dict = {
             'alpha': (ranges_pred[0, 0].item(), ranges_pred[0, 1].item()),
             'beta': (ranges_pred[0, 2].item(), ranges_pred[0, 3].item())
@@ -154,24 +144,30 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
 
         if verbose:
             print(f"α:[{ranges_dict['alpha'][0]:.2f},{ranges_dict['alpha'][1]:.2f}] "
-                  f"β:[{ranges_dict['beta'][0]:.2f},{ranges_dict['beta'][1]:.2f}] | \n", end="")
+                  f"β:[{ranges_dict['beta'][0]:.2f},{ranges_dict['beta'][1]:.2f}] | ")
 
         # 2. Determina numero samples
         if sample_model is not None:
             sample_model.to(device)
-            n_is, n_mc = get_predicted_samples(sample_model, pyg_data)
+            n_is, n_mc = get_predicted_samples(sample_model, pyg_data, T=t, T_max=500.0)
         else:
             n_is, n_mc = n_samples_fallback, n_samples_fallback * 5
 
-        # 3. Configura ExternalConfig per questo t con range specifici
-        config = ExternalConfig(lambda_, mu_, fault_tree_logic, ranges_dict, T=t)
+        # 3. Configura ExternalConfig per questo t CON CRITICITÀ
+        config = ExternalConfig(
+            lambda_, mu_, fault_tree_logic, ranges_dict, T=t,
+            graph=ft,  # NOVITÀ: passa il graph
+            use_component_criticality=use_component_criticality
+        )
         config.epochs = training_epochs
-        n_and = sum(1 for n in ft.nodes if n.get('type') == 'AND')
-        config.n_samples = n_comps*n_and
+        if n_comps * 17 < 500:
+            config.n_samples = n_comps * 17
+        else:
+            config.n_samples = 500
         config.n_trajectories = 100
 
         # 4. Addestra MLP da zero per questo t
-        model = train_mlp_cross_entropy(config)
+        model = train_mlp_cross_entropy(config, verbose=True)
 
         # 5. Estrai α, β
         input_tensor = torch.eye(len(comps)).mean(dim=0).unsqueeze(0).to(device)
@@ -181,7 +177,7 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         alpha = {c: alpha_tensor[0, i].item() for i, c in enumerate(comps)}
         beta = {c: beta_tensor[0, i].item() for i, c in enumerate(comps)}
 
-        # 6. Calcola P(t) con diagnostica
+        # 6. Calcola P(t)
         cdf_point = compute_cdf_point(lambda_, mu_, alpha, beta, t,
                                        fault_tree_logic, n_is, n_mc, verbose=True)
 
@@ -204,9 +200,8 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
             avg_alpha = np.mean([alpha[c] for c in comps])
             avg_beta = np.mean([beta[c] for c in comps])
             print(f"P_is={cdf_point['p_is']:.2e}, P_mc={cdf_point['p_mc']:.2e} | "
-                  f"ᾱ={avg_alpha:.2f}, β̄={avg_beta:.2f}")
+                  f"ᾱ={avg_alpha:.2f}, β̄={avg_beta:.2f} | N_IS={n_is}, N_MC={n_mc}")
 
-        # Stop se P > 10% (oltre questa soglia l'unreliability non è interessante)
         if cdf_point['p_mc'] > 0.1:
             if verbose:
                 print(f"\n[STOP] P_is > 10%, interrompo a T={t}")
@@ -216,26 +211,23 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
 
 
 def plot_cdf(results, topology_name="FaultTree", save_path=None):
-    """
-    Plotta la curva CDF con bande di confidenza.
-    """
+    """Plotta la curva CDF con bande di confidenza."""
     t = np.array(results['t'])
     p_is = np.array(results['p_is'])
+    p_is = np.maximum.accumulate(p_is)
     p_mc = np.array(results['p_mc'])
+    p_mc = np.maximum.accumulate(p_mc)
     std_is = np.array(results['std_is'])
     std_mc = np.array(results['std_mc'])
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # IS
     ax.plot(t, p_is, 'b-', linewidth=2, label='Importance Sampling')
     ax.fill_between(t, p_is - 1.96*std_is, p_is + 1.96*std_is, alpha=0.3, color='blue')
 
-    # MC
     ax.plot(t, p_mc, 'r--', linewidth=2, label='Monte Carlo')
     ax.fill_between(t, p_mc - 1.96*std_mc, p_mc + 1.96*std_mc, alpha=0.3, color='red')
 
-    # Linea 1%
     ax.axhline(y=0.01, color='gray', linestyle=':', linewidth=1, label='P = 1%')
 
     ax.set_xlabel('Tempo t', fontsize=12)
@@ -257,9 +249,7 @@ def plot_cdf(results, topology_name="FaultTree", save_path=None):
 
 
 def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None):
-    """
-    Plotta l'evoluzione di α e β nel tempo per ogni componente.
-    """
+    """Plotta l'evoluzione di α e β nel tempo per ogni componente."""
     t = np.array(results['t'])
     alphas = results['alphas']
     betas = results['betas']
@@ -268,10 +258,8 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Colormap per distinguere i componenti
     colors = plt.cm.viridis(np.linspace(0, 1, n_comps))
 
-    # α(t)
     ax1 = axes[0]
     for i, c in enumerate(comps):
         ax1.plot(t, alphas[c], 'o-', markersize=4, color=colors[i], linewidth=1.2, alpha=0.8)
@@ -281,13 +269,11 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
     ax1.set_title(f'Evoluzione di α nel tempo\n{topology_name}', fontsize=14)
     ax1.grid(True, alpha=0.3)
 
-    # Nota componenti invece di legenda
     ax1.text(0.98, 0.98, f'{n_comps} componenti', transform=ax1.transAxes,
              ha='right', va='top', fontsize=10, style='italic',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     ax1.legend(loc='lower right', fontsize=9)
 
-    # β(t)
     ax2 = axes[1]
     for i, c in enumerate(comps):
         ax2.plot(t, betas[c], 's-', markersize=4, color=colors[i], linewidth=1.2, alpha=0.8)
@@ -297,13 +283,11 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
     ax2.set_title(f'Evoluzione di β nel tempo\n{topology_name}', fontsize=14)
     ax2.grid(True, alpha=0.3)
 
-    # Nota componenti invece di legenda
     ax2.text(0.98, 0.98, f'{n_comps} componenti', transform=ax2.transAxes,
              ha='right', va='top', fontsize=10, style='italic',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     ax2.legend(loc='lower right', fontsize=9)
 
-    # Usa constrained_layout invece di tight_layout
     fig.set_constrained_layout(True)
 
     if save_path:
@@ -315,7 +299,8 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
 
 
 def run_cdf_analysis(ft, fault_tree_logic, range_model, topology_name="FaultTree",
-                     t_max=100, t_step=5, sample_model=None):
+                     t_max=100, t_step=5, sample_model=None,
+                     use_component_criticality=True):
     """
     Funzione principale: calcola CDF, plotta, salva.
 
@@ -327,17 +312,22 @@ def run_cdf_analysis(ft, fault_tree_logic, range_model, topology_name="FaultTree
         t_max: tempo massimo
         t_step: passo temporale
         sample_model: SamplePredictor addestrato (opzionale)
+        use_component_criticality: se True, usa α, β per componente
 
     Returns:
         results dict
     """
-    os.makedirs('results', exist_ok=True)
+    os.makedirs('../results/CDF', exist_ok=True)
+    os.makedirs('../results/ALFA_BETA', exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # 1. Calcola CDF con range adattivi per ogni t
-    results = compute_cdf_curve(ft, fault_tree_logic, range_model,
-                                sample_model=sample_model,
-                                t_max=t_max, t_step=t_step)
+    results = compute_cdf_curve(
+        ft, fault_tree_logic, range_model,
+        sample_model=sample_model,
+        t_max=t_max, t_step=t_step,
+        use_component_criticality=use_component_criticality
+    )
 
     # 2. Plot CDF
     cdf_path = f'results/CDF/cdf_{topology_name}_{timestamp}.png'
@@ -352,6 +342,7 @@ def run_cdf_analysis(ft, fault_tree_logic, range_model, topology_name="FaultTree
     with open(data_path, 'w') as f:
         f.write(f"Topologia: {topology_name}\n")
         f.write(f"T_max: {t_max}, Step: {t_step}\n")
+        f.write(f"Criticità per componente: {use_component_criticality}\n")
         f.write("=" * 60 + "\n\n")
 
         f.write("t\tRange_α\tRange_β\tP_is\tP_mc\tstd_is\tstd_mc\n")
