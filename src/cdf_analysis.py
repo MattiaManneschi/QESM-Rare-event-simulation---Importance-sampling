@@ -4,25 +4,60 @@ from datetime import datetime
 import os
 import math
 import torch
+from pathos.multiprocessing import ProcessPool
 
 from is_optimizer_evaluator import simulate_CTMC, ExternalConfig, train_mlp_cross_entropy
 from N_samples_predictor import get_predicted_samples
-from component_criticality import compute_component_criticality, print_criticality_analysis
+from component_criticality import compute_component_criticality
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
+def _simulate_batch_is(args):
+    lambda_, mu_, alpha, beta, t, fault_tree_logic, batch_size = args
+    results = []
+    for _ in range(batch_size):
+        r = simulate_CTMC(lambda_, mu_, alpha, beta, t, fault_tree_logic)
+        results.append({'log_w': r['log_w'], 'top': r['top']})
+    return results
+
+def _simulate_batch_mc(args):
+    lambda_, mu_, t, fault_tree_logic, batch_size = args
+    comps = list(lambda_.keys())
+    alpha_mc = {c: 1.0 for c in comps}
+    beta_mc = {c: 1.0 for c in comps}
+    results = []
+    for _ in range(batch_size):
+        r = simulate_CTMC(lambda_, mu_, alpha_mc, beta_mc, t, fault_tree_logic)
+        results.append({'top': r['top']})
+    return results
+
 def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, n_mc=2000, verbose=False):
     comps = list(lambda_.keys())
 
-    # IS
-    results_is = [simulate_CTMC(lambda_, mu_, alpha, beta, t, fault_tree_logic)
-                  for _ in range(n_is)]
+    batch_is = max(100, n_is // 16)
+    batch_mc = max(100, n_mc // 16)
+
+    n_batches_is = (n_is + batch_is - 1) // batch_is
+    n_batches_mc = (n_mc + batch_mc - 1) // batch_mc
+
+    args_is = [(lambda_, mu_, alpha, beta, t, fault_tree_logic, batch_is)
+               for _ in range(n_batches_is)]
+
+    args_mc = [(lambda_, mu_, t, fault_tree_logic, batch_mc)
+               for _ in range(n_batches_mc)]
+
+    with ProcessPool(nodes=16) as pool:
+        results_is_batches = pool.map(_simulate_batch_is, args_is)
+        results_mc_batches = pool.map(_simulate_batch_mc, args_mc)
+
+    results_is = [r for batch in results_is_batches for r in batch][:n_is]
+    results_mc = [r for batch in results_mc_batches for r in batch][:n_mc]
 
     all_log_w = [r['log_w'] for r in results_is]
     top_indicators = [1.0 if r['top'] else 0.0 for r in results_is]
 
-    max_log_w = max(all_log_w)
+    max_log_w = max(all_log_w) if all_log_w else 0
     stable_weights = [math.exp(lw - max_log_w) for lw in all_log_w]
 
     numerator = sum(w * ind for w, ind in zip(stable_weights, top_indicators))
@@ -35,19 +70,14 @@ def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, 
 
     n_top_is = sum(top_indicators)
     if n_top_is > 0 and denominator > 0:
-        ess = (sum(stable_weights) ** 2) / sum(w**2 for w in stable_weights)
+        ess = (sum(stable_weights) ** 2) / sum(w ** 2 for w in stable_weights)
         std_is = math.sqrt(p_is * (1 - p_is) / max(ess, 1))
     else:
         std_is = 0.0
 
-    # MC
-    alpha_mc = {c: 1.0 for c in comps}
-    beta_mc = {c: 1.0 for c in comps}
-    results_mc = [simulate_CTMC(lambda_, mu_, alpha_mc, beta_mc, t, fault_tree_logic)
-                  for _ in range(n_mc)]
     hits = [1.0 if r['top'] else 0.0 for r in results_mc]
     p_mc = np.mean(hits)
-    std_mc = np.std(hits) / np.sqrt(n_mc)
+    std_mc = np.std(hits) / np.sqrt(len(hits))
     n_top_mc = sum(hits)
 
     return {
@@ -80,11 +110,8 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         'ranges_alpha': [], 'ranges_beta': []
     }
 
-    # Calcola criticità una volta sola
     if use_component_criticality:
         criticality = compute_component_criticality(ft)
-        if verbose:
-            print_criticality_analysis(ft, criticality)
     else:
         criticality = None
 
@@ -99,7 +126,6 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         if verbose:
             print(f"\n[{timestamp}] [T = {t:.0f}] ", end="")
 
-        # 1. Predici range α/β dalla topologia CON T
         range_model.to(device)
 
         with torch.no_grad():
@@ -114,17 +140,15 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
             print(f"α:[{ranges_dict['alpha'][0]:.2f},{ranges_dict['alpha'][1]:.2f}] "
                   f"β:[{ranges_dict['beta'][0]:.2f},{ranges_dict['beta'][1]:.2f}] | ")
 
-        # 2. Determina numero samples
         if sample_model is not None:
             sample_model.to(device)
             n_is, n_mc = get_predicted_samples(sample_model, pyg_data, T=t, T_max=500.0)
         else:
             n_is, n_mc = n_samples_fallback, n_samples_fallback * 5
 
-        # 3. Configura ExternalConfig per questo t CON CRITICITÀ
         config = ExternalConfig(
             lambda_, mu_, fault_tree_logic, ranges_dict, T=t,
-            graph=ft,  # NOVITÀ: passa il graph
+            graph=ft,
             use_component_criticality=use_component_criticality
         )
         config.epochs = training_epochs
@@ -134,10 +158,8 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
             config.n_samples = 500
         config.n_trajectories = 100
 
-        # 4. Addestra MLP da zero per questo t
         model = train_mlp_cross_entropy(config, verbose=True)
 
-        # 5. Estrai α, β
         input_tensor = torch.eye(len(comps)).mean(dim=0).unsqueeze(0).to(device)
         with torch.no_grad():
             alpha_tensor, beta_tensor = model(input_tensor)
@@ -145,11 +167,9 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         alpha = {c: alpha_tensor[0, i].item() for i, c in enumerate(comps)}
         beta = {c: beta_tensor[0, i].item() for i, c in enumerate(comps)}
 
-        # 6. Calcola P(t)
         cdf_point = compute_cdf_point(lambda_, mu_, alpha, beta, t,
                                        fault_tree_logic, n_is, n_mc, verbose=True)
 
-        # 7. Salva
         results['t'].append(t)
         results['p_is'].append(cdf_point['p_is'])
         results['p_mc'].append(cdf_point['p_mc'])
@@ -281,15 +301,12 @@ def run_cdf_analysis(ft, fault_tree_logic, range_model, topology_name="FaultTree
         use_component_criticality=use_component_criticality
     )
 
-    # 2. Plot CDF
     cdf_path = f'results/CDF/cdf_{topology_name}_{timestamp}.png'
     plot_cdf(results, topology_name, save_path=cdf_path)
 
-    # 3. Plot α/β
     ab_path = f'results/ALFA_BETA/alpha_beta_{topology_name}_{timestamp}.png'
     plot_alpha_beta_evolution(results, topology_name, save_path=ab_path)
 
-    # 4. Salva dati
     data_path = f'results/CDF/cdf_data_{topology_name}_{timestamp}.txt'
     with open(data_path, 'w') as f:
         f.write(f"Topologia: {topology_name}\n")
