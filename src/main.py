@@ -9,7 +9,7 @@ from is_optimizer_evaluator import run_overall_test
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Percorsi file modelli
-MODELS_DIR = 'models'
+MODELS_DIR = '../models'
 SAMPLE_MODEL_PATH = os.path.join(MODELS_DIR, 'sample_predictor_2_15.pth')
 
 # Modelli globali (addestrati una volta)
@@ -65,12 +65,14 @@ def load_or_train_range_model(n_iterations, T_range, comp_range, force_train=Fal
     return range_model
 
 
-def load_or_train_sample_model(n_iterations, comp_range, T=100,
-                               target_top_events=100,
-                               force_train=False):
+def load_or_train_sample_model(n_iterations, comp_range, T_range=(10, 500),
+                               target_cv=0.3, force_train=False):
     """
     Carica o addestra il SamplePredictor.
-    Fine-tuning automatico per comp_range più grandi.
+
+    NOVITÀ:
+    - T_range invece di T fisso
+    - target_cv invece di target_top_events
     """
     global sample_model
 
@@ -85,7 +87,6 @@ def load_or_train_sample_model(n_iterations, comp_range, T=100,
         sample_model.load_state_dict(torch.load(model_path, map_location=device))
         print(f"[SamplePredictor] Caricato da {model_path}")
     else:
-        # Cerca modello precedente per fine-tuning
         pretrained_model = None
 
         if max_comp > 15:
@@ -98,12 +99,12 @@ def load_or_train_sample_model(n_iterations, comp_range, T=100,
                         pretrained_model.load_state_dict(torch.load(candidate, map_location=device))
                         print(f"[SamplePredictor] Fine-tuning da {candidate}")
 
-        print(f"[SamplePredictor] Training ({n_iterations} iter, comp={comp_range})...")
+        print(f"[SamplePredictor] Training ({n_iterations} iter, T={T_range}, comp={comp_range})...")
         sample_model = train_sample_predictor(
             range_model=range_model,
             n_iterations=n_iterations,
-            T=T,
-            target_top_events=target_top_events,
+            T_range=T_range,
+            target_cv=target_cv,
             comp_range=comp_range,
             pretrained_model=pretrained_model
         )
@@ -123,7 +124,7 @@ def initialize_models(n_iter_range, n_iter_sample, T_range, comp_range, force_tr
         force_train: se True, riaddestra anche se esistono file salvati
     """
     load_or_train_range_model(n_iter_range, T_range, comp_range, force_train)
-    load_or_train_sample_model(n_iter_sample, comp_range, force_train)
+    load_or_train_sample_model(n_iter_sample, comp_range, T_range, force_train)
 
 def get_ranges(ft, T, T_max):
     """
@@ -212,8 +213,9 @@ if __name__ == "__main__":
         force_train=False
     )
 
-    iterations = 1
+    """
 
+    iterations = 1
 
     for iteration in range(iterations):
         ft_data = generate_simple_fault_tree((30, 45))
@@ -225,7 +227,8 @@ if __name__ == "__main__":
             topology_name=ft_data['structure'],
             t_max=500,
             t_step=10,
-            sample_model=sample_model
+            sample_model=sample_model,
+            use_component_criticality=True
         )
-
+    """
 
