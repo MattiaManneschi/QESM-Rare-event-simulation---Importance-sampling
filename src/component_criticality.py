@@ -1,31 +1,8 @@
-"""
-Modulo per calcolare la criticità dei componenti nel fault tree.
-
-La criticità determina quanto un componente è "importante" per il top event.
-Componenti sotto molti AND gates sono più critici (tutti devono fallire).
-Componenti sotto OR gates sono meno critici (basta uno).
-
-Questo permette di assegnare α, β diversi per componente:
-- Componenti critici → α più alto (più biasing)
-- Componenti meno critici → α più basso
-"""
-
 import numpy as np
 from collections import defaultdict
 
 
 def compute_component_criticality(graph):
-    """
-    Calcola la criticità di ogni componente basandosi sulla struttura del fault tree.
-
-    Criticità = f(n_AND_above, depth, path_importance)
-
-    Args:
-        graph: FaultTreeGraph
-
-    Returns:
-        dict {component_name: criticality} dove criticality ∈ [0, 1]
-    """
     # Costruisci struttura di adiacenza (child → parent)
     child_to_parents = defaultdict(list)
     for src, dst in graph.edges:
@@ -88,12 +65,6 @@ def compute_component_criticality(graph):
 
 
 def _count_gates_to_root(start_idx, child_to_parents, nodes, root_idx):
-    """
-    Conta AND e OR gates nel path da un nodo alla root.
-
-    Returns:
-        (n_and, n_or, depth)
-    """
     n_and = 0
     n_or = 0
     depth = 0
@@ -124,20 +95,6 @@ def _count_gates_to_root(start_idx, child_to_parents, nodes, root_idx):
 
 
 def get_alpha_multipliers(criticality, base_alpha_min, base_alpha_max):
-    """
-    Calcola α_min, α_max per ogni componente basandosi sulla criticità.
-
-    Componenti più critici → α più alto (più biasing sui loro guasti)
-    Componenti meno critici → α più basso
-
-    Args:
-        criticality: dict {comp: crit} con crit ∈ [0, 1]
-        base_alpha_min: α minimo base dal RangePredictor
-        base_alpha_max: α massimo base dal RangePredictor
-
-    Returns:
-        dict {comp: (alpha_min, alpha_max)}
-    """
     alpha_ranges = {}
 
     # Range di scaling: componenti critici ottengono fino a 1.5x il base
@@ -159,20 +116,6 @@ def get_alpha_multipliers(criticality, base_alpha_min, base_alpha_max):
 
 
 def get_beta_multipliers(criticality, base_beta_min, base_beta_max):
-    """
-    Calcola β_min, β_max per ogni componente basandosi sulla criticità.
-
-    Componenti più critici → β più alto (riparazioni più lente)
-    Componenti meno critici → β più basso
-
-    Args:
-        criticality: dict {comp: crit} con crit ∈ [0, 1]
-        base_beta_min: β minimo base dal RangePredictor
-        base_beta_max: β massimo base dal RangePredictor
-
-    Returns:
-        dict {comp: (beta_min, beta_max)}
-    """
     beta_ranges = {}
 
     # Scaling più conservativo per beta
@@ -189,39 +132,6 @@ def get_beta_multipliers(criticality, base_beta_min, base_beta_max):
 
     return beta_ranges
 
-
-def print_criticality_analysis(graph, criticality):
-    """
-    Stampa un'analisi della criticità dei componenti.
-    """
-    print("\n" + "=" * 50)
-    print("ANALISI CRITICITÀ COMPONENTI")
-    print("=" * 50)
-
-    # Ordina per criticità decrescente
-    sorted_comps = sorted(criticality.items(), key=lambda x: x[1], reverse=True)
-
-    print(f"\n{'Componente':<12} {'Criticità':<10} {'Livello'}")
-    print("-" * 35)
-
-    for comp, crit in sorted_comps:
-        if crit > 0.7:
-            level = "ALTA"
-        elif crit > 0.3:
-            level = "MEDIA"
-        else:
-            level = "BASSA"
-
-        print(f"{comp:<12} {crit:<10.3f} {level}")
-
-    # Statistiche
-    crits = list(criticality.values())
-    print(f"\nMedia: {np.mean(crits):.3f}")
-    print(f"Std:   {np.std(crits):.3f}")
-    print(f"Min:   {np.min(crits):.3f}")
-    print(f"Max:   {np.max(crits):.3f}")
-
-
 # Test standalone
 if __name__ == "__main__":
     from alfa_beta_range_predictor import generate_simple_fault_tree
@@ -234,7 +144,6 @@ if __name__ == "__main__":
 
     # Calcola criticità
     criticality = compute_component_criticality(graph)
-    print_criticality_analysis(graph, criticality)
 
     # Test scaling
     base_alpha = (5.0, 10.0)

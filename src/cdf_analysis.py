@@ -1,11 +1,3 @@
-"""
-cdf_analysis.py - VERSIONE CON α, β PER COMPONENTE
-
-Modifiche principali:
-- Passa il graph a ExternalConfig per calcolare criticità
-- Stampa info sulla criticità nel verbose output
-"""
-
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
@@ -21,10 +13,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, n_mc=2000, verbose=False):
-    """
-    Calcola un singolo punto della CDF usando IS e MC.
-    Usa Self-Normalized Importance Sampling per robustezza ai pesi grandi.
-    """
     comps = list(lambda_.keys())
 
     # IS
@@ -73,24 +61,6 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
                       t_max=100, t_step=5, n_samples_fallback=1000,
                       training_epochs=30, verbose=True,
                       use_component_criticality=True):
-    """
-    Calcola l'intera curva CDF usando la pipeline esistente.
-
-    Args:
-        ft: FaultTreeGraph
-        fault_tree_logic: funzione booleana del fault tree
-        range_model: RangePredictor addestrato
-        sample_model: SamplePredictor addestrato (se None, usa n_samples_fallback)
-        t_max: tempo massimo
-        t_step: passo temporale
-        n_samples_fallback: samples se sample_model è None
-        training_epochs: epoche per addestrare MLP a ogni t
-        verbose: stampa progresso
-        use_component_criticality: se True, usa α, β per componente
-
-    Returns:
-        dict con t, p_is, p_mc, alphas, betas, etc.
-    """
     lambda_, mu_ = ft.get_lambda_mu()
     comps = list(lambda_.keys())
     n_comps = len(comps)
@@ -122,8 +92,6 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         print("=" * 60)
         print("CALCOLO CURVA CDF (range adattivi per ogni t)")
         print(f"T: [{t_step}, {t_max}], step={t_step}, punti={len(t_values)}")
-        print(f"SamplePredictor: {'Sì' if sample_model else 'No (fallback)'}")
-        print(f"Criticità per componente: {'Sì' if use_component_criticality else 'No'}")
         print("=" * 60)
 
     for t in t_values:
@@ -199,7 +167,9 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         if verbose:
             avg_alpha = np.mean([alpha[c] for c in comps])
             avg_beta = np.mean([beta[c] for c in comps])
-            print(f"P_is={cdf_point['p_is']:.2e}, P_mc={cdf_point['p_mc']:.2e} | "
+            cv_is = cdf_point['std_is'] / cdf_point['p_is'] if cdf_point['p_is'] > 0 else float('inf')
+            cv_mc = cdf_point['std_mc'] / cdf_point['p_mc'] if cdf_point['p_mc'] > 0 else float('inf')
+            print(f"P_is={cdf_point['p_is']:.2e} (CV={cv_is:.1%}), P_mc={cdf_point['p_mc']:.2e} (CV={cv_mc:.1%}) | "
                   f"ᾱ={avg_alpha:.2f}, β̄={avg_beta:.2f} | N_IS={n_is}, N_MC={n_mc}")
 
         if cdf_point['p_mc'] > 0.1:
@@ -211,7 +181,6 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
 
 
 def plot_cdf(results, topology_name="FaultTree", save_path=None):
-    """Plotta la curva CDF con bande di confidenza."""
     t = np.array(results['t'])
     p_is = np.array(results['p_is'])
     p_is = np.maximum.accumulate(p_is)
@@ -249,7 +218,6 @@ def plot_cdf(results, topology_name="FaultTree", save_path=None):
 
 
 def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None):
-    """Plotta l'evoluzione di α e β nel tempo per ogni componente."""
     t = np.array(results['t'])
     alphas = results['alphas']
     betas = results['betas']
@@ -301,22 +269,6 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
 def run_cdf_analysis(ft, fault_tree_logic, range_model, topology_name="FaultTree",
                      t_max=100, t_step=5, sample_model=None,
                      use_component_criticality=True):
-    """
-    Funzione principale: calcola CDF, plotta, salva.
-
-    Args:
-        ft: FaultTreeGraph
-        fault_tree_logic: funzione booleana
-        range_model: RangePredictor addestrato
-        topology_name: nome della topologia
-        t_max: tempo massimo
-        t_step: passo temporale
-        sample_model: SamplePredictor addestrato (opzionale)
-        use_component_criticality: se True, usa α, β per componente
-
-    Returns:
-        results dict
-    """
     os.makedirs('../results/CDF', exist_ok=True)
     os.makedirs('../results/ALFA_BETA', exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

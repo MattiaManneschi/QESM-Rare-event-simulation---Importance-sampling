@@ -9,8 +9,8 @@ from is_optimizer_evaluator import run_overall_test
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Percorsi file modelli
-MODELS_DIR = '../models'
-SAMPLE_MODEL_PATH = os.path.join(MODELS_DIR, 'sample_predictor_2_15.pth')
+MODELS_DIR_RANGE = '../models/Range Predictor'
+MODELS_DIR_SAMPLE = '../models/Sample Predictor'
 
 # Modelli globali (addestrati una volta)
 range_model = None
@@ -18,20 +18,14 @@ sample_model = None
 
 
 def load_or_train_range_model(n_iterations, T_range, comp_range, force_train=False):
-    """
-    Carica o addestra il RangePredictor.
-
-    Il modello viene salvato con nome che riflette il comp_range.
-    Per fine-tuning, carica automaticamente il modello del range precedente.
-    """
     global range_model
 
-    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(MODELS_DIR_RANGE, exist_ok=True)
 
     # Nome file basato su comp_range
     min_comp = comp_range[0]
     max_comp = comp_range[1]
-    model_path = os.path.join(MODELS_DIR, f'range_predictor_{min_comp}_{max_comp}.pth')
+    model_path = os.path.join(MODELS_DIR_RANGE, f'range_predictor_{min_comp}_{max_comp}.pth')
 
     range_model = RangePredictor().to(device)
 
@@ -46,7 +40,7 @@ def load_or_train_range_model(n_iterations, T_range, comp_range, force_train=Fal
             prev_ranges = [(2, 15), (15, 30), (30, 45)]
             for prev_min, prev_max in prev_ranges:
                 if prev_max < max_comp:
-                    candidate = os.path.join(MODELS_DIR, f'range_predictor_{prev_min}_{prev_max}.pth')
+                    candidate = os.path.join(MODELS_DIR_RANGE, f'range_predictor_{prev_min}_{prev_max}.pth')
                     if os.path.exists(candidate):
                         pretrained_model = RangePredictor().to(device)
                         pretrained_model.load_state_dict(torch.load(candidate, map_location=device))
@@ -67,19 +61,12 @@ def load_or_train_range_model(n_iterations, T_range, comp_range, force_train=Fal
 
 def load_or_train_sample_model(n_iterations, comp_range, T_range=(10, 500),
                                target_cv=0.3, force_train=False):
-    """
-    Carica o addestra il SamplePredictor.
-
-    NOVITÀ:
-    - T_range invece di T fisso
-    - target_cv invece di target_top_events
-    """
     global sample_model
 
-    os.makedirs(MODELS_DIR, exist_ok=True)
+    os.makedirs(MODELS_DIR_SAMPLE, exist_ok=True)
 
     min_comp, max_comp = comp_range
-    model_path = os.path.join(MODELS_DIR, f'sample_predictor_{min_comp}_{max_comp}.pth')
+    model_path = os.path.join(MODELS_DIR_SAMPLE, f'sample_predictor_{min_comp}_{max_comp}.pth')
 
     sample_model = SamplePredictor().to(device)
 
@@ -93,7 +80,7 @@ def load_or_train_sample_model(n_iterations, comp_range, T_range=(10, 500),
             prev_ranges = [(2, 15), (15, 30), (30, 45)]
             for prev_min, prev_max in prev_ranges:
                 if prev_max < max_comp:
-                    candidate = os.path.join(MODELS_DIR, f'sample_predictor_{prev_min}_{prev_max}.pth')
+                    candidate = os.path.join(MODELS_DIR_SAMPLE, f'sample_predictor_{prev_min}_{prev_max}.pth')
                     if os.path.exists(candidate):
                         pretrained_model = SamplePredictor().to(device)
                         pretrained_model.load_state_dict(torch.load(candidate, map_location=device))
@@ -101,10 +88,9 @@ def load_or_train_sample_model(n_iterations, comp_range, T_range=(10, 500),
 
         print(f"[SamplePredictor] Training ({n_iterations} iter, T={T_range}, comp={comp_range})...")
         sample_model = train_sample_predictor(
-            range_model=range_model,
+            sample_model=sample_model,
             n_iterations=n_iterations,
             T_range=T_range,
-            target_cv=target_cv,
             comp_range=comp_range,
             pretrained_model=pretrained_model
         )
@@ -114,24 +100,10 @@ def load_or_train_sample_model(n_iterations, comp_range, T_range=(10, 500),
     return sample_model
 
 def initialize_models(n_iter_range, n_iter_sample, T_range, comp_range, force_train=False):
-    """
-    Inizializza entrambi i modelli.
-
-    Args:
-        n_iter_range: iterazioni per RangePredictor
-        n_iter_sample: iterazioni per SamplePredictor
-        T_range: (T_min, T_max) per training RangePredictor
-        force_train: se True, riaddestra anche se esistono file salvati
-    """
     load_or_train_range_model(n_iter_range, T_range, comp_range, force_train)
     load_or_train_sample_model(n_iter_sample, comp_range, T_range, force_train)
 
 def get_ranges(ft, T, T_max):
-    """
-    Ottiene i range α/β per un fault tree a un dato T.
-
-    NOVITÀ: Ora richiede T come parametro!
-    """
 
     range_model.eval()
     data = ft.to_pyg_data().to(device)
@@ -170,11 +142,6 @@ def get_samples(ft):
     return N_is, N_mc
 
 def run_pipeline(ft, topology_name, T=100, T_max=500):
-    """
-    Esegue la pipeline completa per un singolo T.
-
-    NOVITÀ: T è ora un parametro!
-    """
     print("\n" + "=" * 60)
     print(f"PIPELINE IMPORTANCE SAMPLING (T={T})")
     print("=" * 60)
@@ -206,14 +173,13 @@ if __name__ == "__main__":
     comp_range = (n_1, n_2)
 
     initialize_models(
-        n_iter_range=(n_2-n_1) * (10 ** 2),
-        n_iter_sample=(n_2-n_1) * (10 ** 2),
+        n_iter_range=2000,
+        n_iter_sample=2000,
         T_range=(10, 500),
         comp_range=comp_range,
         force_train=False
     )
 
-    """
 
     iterations = 1
 
@@ -230,5 +196,6 @@ if __name__ == "__main__":
             sample_model=sample_model,
             use_component_criticality=True
         )
-    """
+
+
 
