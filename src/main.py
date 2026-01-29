@@ -59,8 +59,7 @@ def load_or_train_range_model(n_iterations, T_range, comp_range, force_train=Fal
     return range_model
 
 
-def load_or_train_sample_model(n_iterations, comp_range, T_range=(10, 500),
-                               target_cv=0.3, force_train=False):
+def load_or_train_sample_model(n_iterations, comp_range, T_range=(10, 500), force_train=False):
     global sample_model
 
     os.makedirs(MODELS_DIR_SAMPLE, exist_ok=True)
@@ -196,6 +195,7 @@ if __name__ == "__main__":
             sample_model=sample_model,
             use_component_criticality=True
         )
+
 
 
 
