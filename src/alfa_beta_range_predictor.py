@@ -13,9 +13,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
 class FaultTreeGraph:
-    """
-    Rappresenta un fault tree come grafo per PyTorch Geometric.
-    """
 
     def __init__(self):
         self.nodes = []
@@ -24,7 +21,6 @@ class FaultTreeGraph:
         self.components = {}
 
     def add_component(self, name, lambda_, mu_):
-        """Aggiunge un nodo componente (foglia)."""
         idx = len(self.nodes)
         self.nodes.append({'type': 'component', 'name': name, 'idx': idx})
         self.node_features.append([lambda_, mu_, 1, 0, 0])
@@ -32,7 +28,6 @@ class FaultTreeGraph:
         return idx
 
     def add_gate(self, gate_type, children_idx):
-        """Aggiunge un gate AND/OR."""
         idx = len(self.nodes)
         self.nodes.append({'type': gate_type, 'idx': idx})
 
@@ -47,7 +42,6 @@ class FaultTreeGraph:
         return idx
 
     def to_pyg_data(self):
-        """Converte in formato PyTorch Geometric."""
         x = torch.tensor(self.node_features, dtype=torch.float)
         if self.edges:
             edge_index = torch.tensor(self.edges, dtype=torch.long).t().contiguous()
@@ -56,7 +50,6 @@ class FaultTreeGraph:
         return Data(x=x, edge_index=edge_index)
 
     def get_lambda_mu(self):
-        """Estrae dizionari lambda e mu."""
         lambda_ = {}
         mu_ = {}
         for node in self.nodes:
@@ -68,7 +61,6 @@ class FaultTreeGraph:
         return lambda_, mu_
 
     def get_logic_function(self):
-        """Genera la funzione booleana del Fault Tree."""
         root_idx = len(self.nodes) - 1
 
         def evaluate(node_idx, state):
@@ -96,29 +88,10 @@ def generate_simple_fault_tree(
         max_children_per_gate=4,
         min_children_per_gate=2
 ):
-    """
-    Genera fault tree scalabili con 15-100 componenti.
-
-    Struttura:
-    - Genera n componenti con lambda/mu randomici nel range specificato
-    - Costruisce una topologia gerarchica bottom-up
-    - Usa gate AND, OR e KooN (k-out-of-n) in modo randomico
-
-    Args:
-        n_components_range: (min, max) numero di componenti
-        lambda_range: (min, max) per failure rate
-        mu_range: (min, max) per repair rate
-        max_children_per_gate: massimo figli per gate
-        min_children_per_gate: minimo figli per gate
-
-    Returns:
-        dict con graph, fault_tree, lambda_, mu_, structure
-    """
 
     n_components = random.randint(*n_components_range)
     graph = FaultTreeGraph()
 
-    # 1. Genera tutti i componenti con lambda/mu randomici
     component_indices = []
     for i in range(n_components):
         lambda_ = random.uniform(*lambda_range)
@@ -126,7 +99,6 @@ def generate_simple_fault_tree(
         idx = graph.add_component(f'C{i}', lambda_, mu_)
         component_indices.append(idx)
 
-    # 2. Costruisci la topologia bottom-up
     current_level = component_indices.copy()
     level = 0
 
@@ -138,7 +110,6 @@ def generate_simple_fault_tree(
         while i < len(current_level):
             remaining = len(current_level) - i
 
-            # Determina quanti figli per questo gate
             if remaining <= max_children_per_gate:
                 n_children = remaining
             else:
@@ -147,21 +118,17 @@ def generate_simple_fault_tree(
                     min(max_children_per_gate, remaining)
                 )
 
-            # Assicurati di avere almeno min_children
             n_children = max(min_children_per_gate, min(n_children, remaining))
 
             if n_children < min_children_per_gate:
-                # Non abbastanza nodi, passali al livello successivo
                 next_level.extend(current_level[i:])
                 break
 
             children = current_level[i:i + n_children]
 
-            # Scegli tipo di gate randomicamente
             gate_type = _choose_gate_type(n_children)
 
             if gate_type == 'KooN':
-                # Implementa KooN come combinazione di AND e OR
                 k = random.randint(2, n_children - 1)
                 gate_idx = _add_koon_gate(graph, children, k)
             else:
@@ -173,11 +140,9 @@ def generate_simple_fault_tree(
         current_level = next_level
         level += 1
 
-        # Safety: evita loop infiniti
         if level > 20:
             break
 
-    # 3. Se rimane più di un nodo, crea root finale
     if len(current_level) > 1:
         gate_type = random.choice(['AND', 'OR'])
         graph.add_gate(gate_type, current_level)
@@ -185,7 +150,6 @@ def generate_simple_fault_tree(
     lambda_dict, mu_dict = graph.get_lambda_mu()
     fault_tree = graph.get_logic_function()
 
-    # Calcola statistiche
     n_and = sum(1 for n in graph.nodes if n.get('type') == 'AND')
     n_or = sum(1 for n in graph.nodes if n.get('type') == 'OR')
     structure = f"random_{n_components}comp_{n_and}AND_{n_or}OR"
@@ -200,12 +164,6 @@ def generate_simple_fault_tree(
 
 
 def _choose_gate_type(n_children):
-    """
-    Sceglie il tipo di gate in base al numero di figli.
-
-    Per FT grandi (15-50 comp), serve alta probabilità di OR
-    altrimenti i top events sono troppo rari.
-    """
     if n_children >= 3:
         r = random.random()
         if r < 0.3:
@@ -219,29 +177,17 @@ def _choose_gate_type(n_children):
 
 
 def _add_koon_gate(graph, children, k):
-    """
-    Implementa un gate k-out-of-n usando combinazioni di AND e OR.
-
-    k-out-of-n significa: almeno k dei n figli devono essere in fault.
-    Equivale a: OR di tutti gli AND di k figli.
-
-    Per evitare esplosione combinatorica con n grande, usa approssimazione:
-    - Se combinazioni <= 10: implementazione esatta
-    - Altrimenti: campiona subset di combinazioni
-    """
     from itertools import combinations
 
     n = len(children)
     all_combos = list(combinations(range(n), k))
 
-    # Limita il numero di combinazioni per evitare esplosione
     max_combos = 10
     if len(all_combos) > max_combos:
         selected_combos = random.sample(all_combos, max_combos)
     else:
         selected_combos = all_combos
 
-    # Crea un AND per ogni combinazione
     and_gates = []
     for combo in selected_combos:
         combo_children = [children[i] for i in combo]
@@ -256,18 +202,6 @@ def _add_koon_gate(graph, children, k):
 
 
 class RangePredictor(nn.Module):
-    """
-    GNN che predice i range ottimali di alpha e beta.
-
-    Input:
-        - grafo del fault tree con features [λ, μ, is_comp, is_AND, is_OR]
-        - T (tempo di missione) normalizzato
-    Output: [alpha_min, alpha_max, beta_min, beta_max]
-
-    NOVITÀ: T è un input! Questo permette alla rete di imparare che:
-    - T piccolo → α alto (evento raro, serve biasing forte)
-    - T grande → α → 1 (evento più probabile, meno biasing)
-    """
 
     def __init__(self, node_features=5, hidden_dim=64, embedding_dim=16):
         super().__init__()
@@ -276,7 +210,6 @@ class RangePredictor(nn.Module):
         self.conv2 = GCNConv(hidden_dim, hidden_dim)
         self.conv3 = GCNConv(hidden_dim, embedding_dim)
 
-        # +7 per features globali: n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu, T_normalized
         self.predictor = nn.Sequential(
             nn.Linear(embedding_dim + 8, 64),
             nn.ReLU(),
@@ -288,7 +221,6 @@ class RangePredictor(nn.Module):
         self.log_std = nn.Parameter(torch.zeros(4))
 
     def compute_global_features(self, data, T_normalized):
-        """Calcola features globali del grafo + T."""
         x = data.x
 
         n_comp = x[:, 2].sum().item()
@@ -311,14 +243,6 @@ class RangePredictor(nn.Module):
                             dtype=torch.float, device=x.device)
 
     def forward(self, data, T, T_max):
-        """
-        Forward pass.
-
-        Args:
-            data: PyG Data object
-            T: tempo di missione
-            T_max: tempo massimo per normalizzazione (default 500)
-        """
         x, edge_index = data.x, data.edge_index
 
         if hasattr(data, 'batch'):
@@ -326,41 +250,32 @@ class RangePredictor(nn.Module):
         else:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
-        # GNN message passing
         x = torch.relu(self.conv1(x, edge_index))
         x = torch.relu(self.conv2(x, edge_index))
         x = self.conv3(x, edge_index)
 
-        # Pooling
         embedding = global_mean_pool(x, batch)
 
-        # Normalizza T in [0, 1]
         T_normalized = T / T_max
 
-        # Aggiungi features globali + T
         global_features = self.compute_global_features(data, T_normalized)
         embedding = torch.cat([embedding, global_features], dim=1)
 
         raw = self.predictor(embedding)
 
-        # Softplus con bias per partire da valori più alti
-        # softplus(x) ≈ x per x > 2, quindi aggiungiamo bias
-        val = F.softplus(raw + 2.0)  # Bias +2 per partire da valori più alti
+        val = F.softplus(raw + 2.0)
 
-        # Alpha: minimo 1.0, la rete decide quanto aggiungere
         alpha_min = 1.0 + val[:, 0]
-        alpha_max = alpha_min + val[:, 1] + 0.5  # almeno 0.5 di range
+        alpha_max = alpha_min + val[:, 1] + 0.5
 
-        # Beta: minimo 1.0, la rete decide quanto aggiungere
         beta_min = 1.0 + val[:, 2]
-        beta_max = beta_min + val[:, 3] + 0.5  # almeno 0.5 di range
+        beta_max = beta_min + val[:, 3] + 0.5
 
         out = torch.stack([alpha_min, alpha_max, beta_min, beta_max], dim=1)
 
         return out, embedding
 
     def get_ranges(self, raw, T_normalized=0.5):
-        """Converte raw output in range (senza vincoli hardcoded)."""
         val = F.softplus(raw + 2.0)  # Bias +2 per valori più alti
 
         alpha_min = 1.0 + val[:, 0]
@@ -372,7 +287,6 @@ class RangePredictor(nn.Module):
         return alpha_min, alpha_max, beta_min, beta_max
 
     def sample_ranges(self, raw):
-        """Campiona range con rumore per esplorazione."""
         std = torch.exp(self.log_std)
         dist = torch.distributions.Normal(raw, std)
         sampled = dist.sample()
@@ -382,16 +296,11 @@ class RangePredictor(nn.Module):
 
 
 def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min, beta_max, n_eval=50):
-    """
-    Valuta la qualità dei range predetti eseguendo IS.
-    Versione semplificata e veloce per training.
-    """
     comps = list(lambda_.keys())
 
     alpha = {c: (alpha_min + alpha_max) / 2 for c in comps}
     beta = {c: (beta_min + beta_max) / 2 for c in comps}
 
-    # Simulazioni sequenziali (più veloci su Colab di multiprocessing)
     results = [simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree)
                for _ in range(n_eval)]
 
@@ -416,19 +325,6 @@ def evaluate_ranges(lambda_, mu_, T, fault_tree, alpha_min, alpha_max, beta_min,
 
 
 def train_range_predictor(n_iterations, T_range, pretrained_model, comp_range):
-    """
-    Addestra il RangePredictor con T VARIABILE.
-
-    Args:
-        n_iterations: numero di iterazioni di training
-        T_range: (T_min, T_max) per campionare T casuali
-        verbose: stampa progresso
-
-    La rete impara che:
-    - T piccolo → serve α alto (biasing forte)
-    - T grande → α → 1 (poco biasing)
-    """
-
     if pretrained_model is not None:
         model = pretrained_model.to(device)
         print(f"[Fine-tuning] Partendo da modello pre-addestrato")
@@ -448,14 +344,11 @@ def train_range_predictor(n_iterations, T_range, pretrained_model, comp_range):
     print("=" * 60)
 
     for iteration in range(n_iterations):
-        # 1. Genera fault tree
         ft_data = generate_simple_fault_tree(comp_range)
         pyg_data = ft_data['graph'].to_pyg_data().to(device)
 
-        # 2. Campiona T casuale
         T = random.uniform(T_min, T_max)
 
-        # 3. Predici range con T
         raw, _ = model(pyg_data, T=T, T_max=T_max)
         sampled_raw, log_prob = model.sample_ranges(raw)
 
@@ -469,29 +362,22 @@ def train_range_predictor(n_iterations, T_range, pretrained_model, comp_range):
         avg_beta = (b_min + b_max) / 2
 
         try:
-            # 1. Analisi Topologica: estraiamo il numero di gate dal grafo
             n_and = sum(1 for n in ft_data['graph'].nodes if n.get('type') == 'AND')
             n_or = sum(1 for n in ft_data['graph'].nodes if n.get('type') == 'OR')
 
-            # 2. Calcolo Fattore di Rarità (rho):
-            # Più AND ci sono rispetto agli OR, più il guasto è raro -> serve alpha alto.
             rho = (n_and + 1) / (n_or + 1)
-            rho = max(0.5, min(rho, 3.0))  # Limitiamo l'influenza per stabilità
+            rho = max(0.5, min(rho, 3.0))
             rho_beta = (n_and + 1) / (n_or + 2)
             rho_beta = max(0.5, min(rho_beta, 2.0))
 
             p = 4.0
             time_decay = math.pow(1.0 - T_normalized, p)
 
-            # 3. Calcolo Target Alpha fluido:
-            # Decade linearmente verso 1.0 man mano che T_normalized va verso 1.0
-            # Usiamo un base_alpha di 12.0 come punto di partenza per eventi rari
             target_alpha = 1.0 + (10.0 * rho * time_decay)
-            target_alpha = max(1.1, target_alpha)  # Non deve mai essere <= 1
+            target_alpha = max(1.1, target_alpha)
             target_beta = 1.0 + (5.0 * rho_beta * time_decay)
             target_beta = max(1.0, target_beta)
 
-            # 4. Valutazione dei risultati IS
             eval_results = evaluate_ranges(
                 ft_data['lambda_'], ft_data['mu_'], T, ft_data['fault_tree'],
                 a_min, a_max, b_min, b_max, n_eval=100
@@ -507,12 +393,10 @@ def train_range_predictor(n_iterations, T_range, pretrained_model, comp_range):
             dist_beta = (avg_beta - target_beta) ** 2
 
             if cv == float('inf') or top_rate == 0:
-                # Fallimento critico: penalità basata sulla distanza dal target
                 reward = -15.0 - dist_alpha - dist_beta
             else:
-                # Successo: calcoliamo il base_reward sulla qualità statistica (CV)
                 if cv < 0.3:
-                    base_reward = 500.0  # Molto alto per bilanciare penalità
+                    base_reward = 500.0
                 elif cv < 0.5:
                     base_reward = 300.0
                 elif cv < 1.0:
@@ -520,23 +404,18 @@ def train_range_predictor(n_iterations, T_range, pretrained_model, comp_range):
                 else:
                     base_reward = 10.0 / cv
 
-                # Bonus/Malus sul top_rate (ideale tra 10% e 40%)
                 if 0.1 <= top_rate <= 0.4: base_reward += 2.0
 
-                # 2. CALCOLO PENALITÀ ALPHA E BETA
-                # Usiamo un peso che cresce col tempo per forzare l'asintoto a 1.0
                 penalty_alpha = dist_alpha * (15.0 + 30.0 * T_normalized) * complexity_factor
 
                 penalty_beta = dist_beta * (15.0 + 30.0 * T_normalized) * complexity_factor
 
-                # 3. PENALITÀ AMPIEZZA RANGE
                 current_beta_range = b_max - b_min
                 target_range = 1.0
                 penalty_range = 0.0
                 if current_beta_range > target_range:
                     penalty_range = ((current_beta_range - target_range) ** 2) * 5.0
 
-                # 4. ASSEMBLAGGIO FINALE
                 reward = base_reward - penalty_alpha - penalty_beta - penalty_range
 
         except Exception as e:
