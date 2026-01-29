@@ -1,11 +1,3 @@
-"""
-N_samples_predictor.py - VERSIONE CON T COME INPUT
-
-Il SamplePredictor ora considera T per predire il numero di samples:
-- T piccolo → P bassa → servono più samples
-- T grande → P alta → bastano meno samples
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -14,37 +6,87 @@ import math
 import random
 from torch_geometric.nn import GCNConv, global_mean_pool
 from alfa_beta_range_predictor import generate_simple_fault_tree
-from is_optimizer_evaluator import simulate_CTMC
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Definizione bucket
+IS_BUCKETS = [10000, 25000, 50000, 100000, 250000, 500000]
+MC_BUCKETS = [20000, 50000, 100000, 250000, 500000, 1000000]
+
+
+def get_bucket_index(n, buckets):
+    for i, b in enumerate(buckets):
+        if n <= b:
+            return i
+    return len(buckets) - 1
+
+
+def get_bucket_value(idx, buckets):
+    idx = max(0, min(idx, len(buckets) - 1))
+    return buckets[idx]
+
+
+def get_samples_heuristic(T, n_components, n_AND, n_OR, T_max=500):
+    # 1. Fattore T: scaling inverso (T piccolo → più samples)
+    T_factor = math.sqrt(T_max / max(T, 1))
+
+    # 2. Fattore struttura: più AND → P più bassa → più samples
+    total_gates = n_AND + n_OR
+    if total_gates > 0:
+        and_ratio = n_AND / total_gates
+    else:
+        and_ratio = 0.5
+
+    # and_ratio = 0 → structure_factor = 1
+    # and_ratio = 0.5 → structure_factor = 2
+    # and_ratio = 1 → structure_factor = 4
+    structure_factor = 1 + 3 * and_ratio
+
+    # 3. Fattore componenti
+    comp_factor = math.sqrt(n_components / 10)
+
+    # 4. Base samples
+    base_is = 30000
+    base_mc = 60000
+
+    # 5. Calcola samples finali
+    n_is = int(base_is * T_factor * structure_factor * comp_factor)
+    n_mc = int(base_mc * T_factor * structure_factor * comp_factor)
+
+    # 6. Clamp ai limiti
+    n_is = max(10000, min(500000, n_is))
+    n_mc = max(20000, min(1000000, n_mc))
+
+    # 7. MC deve avere almeno tanti samples quanti IS
+    n_mc = max(n_mc, n_is)
+
+    return n_is, n_mc
+
 
 class SamplePredictor(nn.Module):
-    """
-    Predice il numero ottimale di samples IS e MC.
-
-    NOVITÀ: Riceve T come input per adattare la predizione.
-    - T piccolo → P bassa → più samples necessari
-    - T grande → P alta → meno samples necessari
-    """
-
     def __init__(self, node_features=5, hidden_dim=64):
         super().__init__()
 
         self.conv1 = GCNConv(node_features, hidden_dim)
         self.conv2 = GCNConv(hidden_dim, hidden_dim)
+        self.conv3 = GCNConv(hidden_dim, hidden_dim)
 
-        # +7 per features globali: n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu, T_normalized
-        self.predictor = nn.Sequential(
-            nn.Linear(hidden_dim + 7, 32),
+        # +7 features globali: n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu, T_normalized
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim + 7, 64),
             nn.ReLU(),
-            nn.Linear(32, 2)
+            nn.Dropout(0.2),
+            nn.Linear(64, 32),
+            nn.ReLU(),
         )
 
-        self.log_std = nn.Parameter(torch.zeros(2))
+        # Head per IS: 6 classi (bucket)
+        self.is_head = nn.Linear(32, len(IS_BUCKETS))
+
+        # Head per MC: 6 classi (bucket)
+        self.mc_head = nn.Linear(32, len(MC_BUCKETS))
 
     def compute_global_features(self, data, T_normalized):
-        """Calcola features globali del grafo + T normalizzato."""
         x = data.x
 
         n_comp = x[:, 2].sum().item()
@@ -61,22 +103,10 @@ class SamplePredictor(nn.Module):
 
         depth = n_AND + n_OR
 
-        # Aggiungi T_normalized come 7a feature
         return torch.tensor([[n_comp, n_AND, n_OR, depth, avg_lambda, avg_mu, T_normalized]],
                             dtype=torch.float, device=x.device)
 
     def forward(self, data, T=100.0, T_max=500.0):
-        """
-        Forward pass con T come parametro.
-
-        Args:
-            data: PyG Data object
-            T: tempo di missione corrente
-            T_max: tempo massimo per normalizzazione
-
-        Returns:
-            log_n: [log10(n_is), log10(n_mc)]
-        """
         x, edge_index = data.x, data.edge_index
 
         if hasattr(data, 'batch'):
@@ -84,135 +114,80 @@ class SamplePredictor(nn.Module):
         else:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
+        # GNN layers
         x = F.relu(self.conv1(x, edge_index))
         x = F.relu(self.conv2(x, edge_index))
+        x = F.relu(self.conv3(x, edge_index))
 
+        # Global pooling
         embedding = global_mean_pool(x, batch)
 
-        # Normalizza T
+        # Aggiungi features globali
         T_normalized = T / T_max
-
-        # Aggiungi features globali con T
         global_features = self.compute_global_features(data, T_normalized)
         embedding = torch.cat([embedding, global_features], dim=1)
 
-        raw = self.predictor(embedding)
+        # FC layers
+        features = self.fc(embedding)
 
-        # Output range [2, 6] → N tra 100 e 1.000.000
-        # Per T piccoli servono più samples, per T grandi meno
-        # La rete impara questo pattern
-        log_n = 2.0 + torch.sigmoid(raw) * 4.0
+        # Classification heads
+        is_logits = self.is_head(features)
+        mc_logits = self.mc_head(features)
 
-        return log_n
+        return is_logits, mc_logits
 
-    def sample_prediction(self, log_n):
-        """Campiona con rumore per esplorazione durante il training."""
-        std = torch.exp(self.log_std)
-        dist = torch.distributions.Normal(log_n, std)
-        sampled = dist.sample()
-        log_prob = dist.log_prob(sampled).sum(dim=-1)
-        return sampled, log_prob
+    def predict_buckets(self, data, T=100.0, T_max=500.0):
+        is_logits, mc_logits = self.forward(data, T, T_max)
 
+        is_idx = torch.argmax(is_logits, dim=1).item()
+        mc_idx = torch.argmax(mc_logits, dim=1).item()
 
-def find_required_samples_is(lambda_, mu_, alpha, beta, T, fault_tree,
-                             target_cv=0.3, max_n=500000, batch_size=1000):
-    """
-    Trova quanti campioni IS servono per raggiungere un CV target.
+        return is_idx, mc_idx
 
-    Args:
-        target_cv: coefficiente di variazione target (default 0.3 = 30%)
-        max_n: massimo numero di samples
-        batch_size: samples per la stima iniziale
-    """
-    results = [simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree)
-               for _ in range(batch_size)]
+    def predict_samples(self, data, T=100.0, T_max=500.0):
+        is_idx, mc_idx = self.predict_buckets(data, T, T_max)
 
-    weights = [math.exp(r['log_w']) if r['top'] else 0.0 for r in results]
-    n_top = sum(1 for r in results if r['top'])
+        n_is = IS_BUCKETS[is_idx]
+        n_mc = MC_BUCKETS[mc_idx]
 
-    if n_top == 0:
-        return max_n
+        # MC deve essere >= IS
+        n_mc = max(n_mc, n_is)
 
-    # Stima CV attuale
-    p_is = sum(weights) / batch_size
-    if p_is <= 0:
-        return max_n
-
-    var_is = sum((w - p_is) ** 2 for w in weights) / batch_size
-    std_is = math.sqrt(var_is / batch_size)
-    cv_current = std_is / p_is if p_is > 0 else float('inf')
-
-    # N necessario per raggiungere target_cv
-    # CV scala con 1/sqrt(N), quindi N_new = N_old * (CV_old / CV_target)^2
-    if cv_current <= target_cv:
-        return batch_size
-
-    scale_factor = (cv_current / target_cv) ** 2
-    estimated_n = int(batch_size * scale_factor)
-
-    return min(max(estimated_n, batch_size), max_n)
+        return n_is, n_mc
 
 
-def find_required_samples_mc(lambda_, mu_, T, fault_tree,
-                             target_cv=0.3, max_n=1000000, batch_size=2000):
-    """
-    Trova quanti campioni MC servono per raggiungere un CV target.
-    """
-    comps = list(lambda_.keys())
-    alpha = {c: 1.0 for c in comps}
-    beta = {c: 1.0 for c in comps}
-
-    results = [simulate_CTMC(lambda_, mu_, alpha, beta, T, fault_tree)
-               for _ in range(batch_size)]
-
-    hits = [1.0 if r['top'] else 0.0 for r in results]
-    n_top = sum(hits)
-
-    if n_top == 0:
-        return max_n
-
-    p_mc = n_top / batch_size
-
-    # Per Bernoulli: CV = sqrt((1-p)/(p*N))
-    # Per target_cv: N = (1-p) / (p * target_cv^2)
-    estimated_n = int((1 - p_mc) / (p_mc * target_cv ** 2))
-
-    return min(max(estimated_n, batch_size), max_n)
-
-
-def train_sample_predictor(range_model, n_iterations, T_range=(10, 500),
-                           target_cv=0.3, comp_range=(2, 15),
+def train_sample_predictor(sample_model, n_iterations, T_range=(10, 500),
+                           comp_range=(5, 45),
                            pretrained_model=None, verbose=True):
-    """
-    Allena il SamplePredictor con T VARIABILE.
-
-    Args:
-        range_model: modello RangePredictor già addestrato
-        n_iterations: numero di iterazioni di training
-        T_range: (T_min, T_max) per campionare T casuali
-        target_cv: CV target per le stime
-        comp_range: (min_comp, max_comp) per generare fault tree
-        pretrained_model: modello pre-addestrato per fine-tuning
-        verbose: stampa progresso
-    """
     if pretrained_model is not None:
         model = pretrained_model.to(device)
         print(f"[Fine-tuning] Partendo da modello pre-addestrato")
     else:
         model = SamplePredictor().to(device)
-        print(f"[Training] Partendo da zero")
+        print(f"[Training] Nuovo modello")
 
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    range_model.eval()
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=500, gamma=0.5)
+
+    criterion = nn.CrossEntropyLoss()
+
+    sample_model.eval()
 
     T_min, T_max = T_range
 
     print("=" * 60)
-    print(f"TRAINING GNN - PREDIZIONE SAMPLES (T VARIABILE)")
+    print(f"TRAINING SAMPLE PREDICTOR v4 (BUCKET CLASSIFICATION)")
     print(f"Range T: [{T_min}, {T_max}]")
     print(f"Range componenti: {comp_range}")
-    print(f"Target CV: {target_cv}")
+    print(f"Ground Truth: EURISTICA")
+    print(f"Bucket IS: {IS_BUCKETS}")
+    print(f"Bucket MC: {MC_BUCKETS}")
     print("=" * 60)
+
+    running_loss = 0.0
+    correct_is = 0
+    correct_mc = 0
+    total = 0
 
     for iteration in range(n_iterations):
         # Genera fault tree
@@ -220,111 +195,89 @@ def train_sample_predictor(range_model, n_iterations, T_range=(10, 500),
         pyg_data = ft_data['graph'].to_pyg_data().to(device)
 
         lambda_ = ft_data['lambda_']
-        mu_ = ft_data['mu_']
-        fault_tree = ft_data['fault_tree']
         comps = list(lambda_.keys())
         n_comps = len(comps)
 
-        # Campiona T casuale
+        # Estrai info struttura
+        x = pyg_data.x
+        n_AND = int(x[:, 3].sum().item())
+        n_OR = int(x[:, 4].sum().item())
+
+        # Campiona T
         T = random.uniform(T_min, T_max)
 
-        # 1. Ottieni biasing dal range_model (con T!)
-        with torch.no_grad():
-            ranges, _ = range_model(pyg_data, T=T, T_max=T_max)
-            r = ranges[0].cpu().numpy()
-            alpha_val = (r[0] + r[1]) / 2
-            beta_val = (r[2] + r[3]) / 2
-
-        alpha_dict = {c: alpha_val for c in comps}
-        beta_dict = {c: beta_val for c in comps}
-
-        # 2. Predici N (log10) con T
-        log_n_pred = model(pyg_data, T=T, T_max=T_max)
-        log_n_sampled, log_prob = model.sample_prediction(log_n_pred)
-
-        n_is_pred = int(10 ** log_n_sampled[0, 0].item())
-        n_mc_pred = int(10 ** log_n_sampled[0, 1].item())
-
-        # 3. Calcola Ground Truth
         try:
-            n_is_real = find_required_samples_is(
-                lambda_, mu_, alpha_dict, beta_dict, T, fault_tree,
-                target_cv=target_cv, max_n=500000, batch_size=500
-            )
-            n_mc_real = find_required_samples_mc(
-                lambda_, mu_, T, fault_tree,
-                target_cv=target_cv, max_n=1000000, batch_size=1000
-            )
+            # Ground truth dall'EURISTICA
+            n_is_real, n_mc_real = get_samples_heuristic(T, n_comps, n_AND, n_OR, T_max)
 
-            # 4. REWARD
-            log_n_is_real = math.log10(max(100, n_is_real))
-            log_n_mc_real = math.log10(max(100, n_mc_real))
+            # Converti in indice bucket
+            is_target = get_bucket_index(n_is_real, IS_BUCKETS)
+            mc_target = get_bucket_index(n_mc_real, MC_BUCKETS)
 
-            diff_is = log_n_sampled[0, 0].item() - log_n_is_real
-            diff_mc = log_n_sampled[0, 1].item() - log_n_mc_real
+            # Forward pass
+            model.train()
+            is_logits, mc_logits = model(pyg_data, T, T_max)
 
-            # Penalità asimmetrica: sottostimare è peggio
-            error_is = abs(diff_is) if diff_is >= 0 else abs(diff_is) * 3.0
-            error_mc = abs(diff_mc) if diff_mc >= 0 else abs(diff_mc) * 3.0
+            # Loss
+            is_target_tensor = torch.tensor([is_target], device=device)
+            mc_target_tensor = torch.tensor([mc_target], device=device)
 
-            reward = -(error_is + error_mc)
+            loss_is = criterion(is_logits, is_target_tensor)
+            loss_mc = criterion(mc_logits, mc_target_tensor)
+            loss = loss_is + loss_mc
 
-            # Bonus se MC > IS (corretto per rare events)
-            if n_mc_pred > n_is_pred:
-                reward += 1.0
-            else:
-                reward -= 2.0
+            # Backprop
+            optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+            # Stats
+            running_loss += loss.item()
+
+            is_pred = torch.argmax(is_logits, dim=1).item()
+            mc_pred = torch.argmax(mc_logits, dim=1).item()
+
+            if is_pred == is_target:
+                correct_is += 1
+            if mc_pred == mc_target:
+                correct_mc += 1
+            total += 1
 
         except Exception as e:
-            reward = -10.0
-            n_is_real, n_mc_real = n_is_pred, n_mc_pred
+            print(f"Errore iter {iteration}: {e}")
+            continue
 
-        # 5. Backpropagation
-        loss = -reward * log_prob
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        scheduler.step()
 
-        if verbose and iteration % 20 == 0:
-            print(f"Iter {iteration:3d} | T={T:5.0f} | comp={n_comps:2d} | "
-                  f"IS: {n_is_pred:6d}/{n_is_real:6d} | MC: {n_mc_pred:7d}/{n_mc_real:7d} | "
-                  f"Rew: {reward:.2f}")
+        if verbose and iteration % 50 == 0 and total > 0:
+            avg_loss = running_loss / total
+            acc_is = 100 * correct_is / total
+            acc_mc = 100 * correct_mc / total
+
+            n_is_pred = IS_BUCKETS[is_pred]
+            n_mc_pred = MC_BUCKETS[mc_pred]
+
+            print(f"Iter {iteration:4d} | T={T:5.0f} | comp={n_comps:2d} | "
+                  f"IS: {n_is_pred:6,} vs {n_is_real:6,} (acc={acc_is:.1f}%) | "
+                  f"MC: {n_mc_pred:7,} vs {n_mc_real:7,} (acc={acc_mc:.1f}%) | "
+                  f"Loss: {avg_loss:.3f}")
+
+            running_loss = 0.0
+            correct_is = 0
+            correct_mc = 0
+            total = 0
 
     return model
 
 
 def get_predicted_samples(model, pyg_data, T=100.0, T_max=500.0):
-    """
-    Ritorna il numero di campioni suggeriti.
-
-    NOVITÀ: Richiede T come parametro!
-
-    Args:
-        model: SamplePredictor
-        pyg_data: grafo PyG
-        T: tempo di missione corrente
-        T_max: tempo massimo per normalizzazione
-
-    Returns:
-        (n_is, n_mc)
-    """
     model.eval()
 
     if not hasattr(pyg_data, 'batch'):
         pyg_data.batch = torch.zeros(pyg_data.x.size(0), dtype=torch.long, device=pyg_data.x.device)
 
     with torch.no_grad():
-        log_n = model(pyg_data, T=T, T_max=T_max)
+        n_is, n_mc = model.predict_samples(pyg_data, T, T_max)
 
-        n_is = int(10 ** log_n[0, 0].item())
-        n_mc = int(10 ** log_n[0, 1].item())
-
-        # Clamp ai limiti
-        n_is = max(5000, min(500000, n_is))
-        n_mc = max(10000, min(1000000, n_mc))
-
-        # MC deve avere almeno tanti samples quanti IS
-        n_mc = max(n_mc, n_is)
-
-        return n_is, n_mc
+    return n_is, n_mc
