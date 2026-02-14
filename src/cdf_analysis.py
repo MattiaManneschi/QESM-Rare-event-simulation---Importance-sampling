@@ -1,83 +1,84 @@
+"""
+CDF Analysis v4 - Usa DirectPredictor + Adaptive IS (Cross-Entropy)
+
+Stessa interfaccia di prima, ma internamente usa Cross-Entropy
+per ottimizzare α, β ad ogni punto T.
+
+Flusso per ogni T:
+1. DirectPredictor → α₀, β₀ (punto di partenza)
+2. Cross-Entropy (3-4 iter) → α_opt, β_opt (raffinamento)
+3. IS con parametri ottimizzati → P_is
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import os
 import math
 import torch
-from pathos.multiprocessing import ProcessPool
 
-from is_optimizer_evaluator import simulate_CTMC, ExternalConfig, train_mlp_cross_entropy
-from N_samples_predictor import get_predicted_samples
-from component_criticality import compute_component_criticality
+from direct_predictor import simulate_CTMC_simple
+from n_samples_predictor import get_predicted_samples
+from adaptive import adaptive_is_cross_entropy
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def _simulate_batch_is(args):
-    lambda_, mu_, alpha, beta, t, fault_tree_logic, batch_size = args
-    results = []
-    for _ in range(batch_size):
-        r = simulate_CTMC(lambda_, mu_, alpha, beta, t, fault_tree_logic)
-        results.append({'log_w': r['log_w'], 'top': r['top']})
-    return results
-
-def _simulate_batch_mc(args):
-    lambda_, mu_, t, fault_tree_logic, batch_size = args
-    comps = list(lambda_.keys())
-    alpha_mc = {c: 1.0 for c in comps}
-    beta_mc = {c: 1.0 for c in comps}
-    results = []
-    for _ in range(batch_size):
-        r = simulate_CTMC(lambda_, mu_, alpha_mc, beta_mc, t, fault_tree_logic)
-        results.append({'top': r['top']})
-    return results
-
-def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, n_mc=2000, verbose=False):
+def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic,
+                      n_is=10000, n_mc=50000):
+    """
+    Calcola un punto della CDF con IS e MC.
+    USA STANDARD IS (non self-normalized).
+    """
     comps = list(lambda_.keys())
 
-    batch_is = max(100, n_is // 16)
-    batch_mc = max(100, n_mc // 16)
-
-    n_batches_is = (n_is + batch_is - 1) // batch_is
-    n_batches_mc = (n_mc + batch_mc - 1) // batch_mc
-
-    args_is = [(lambda_, mu_, alpha, beta, t, fault_tree_logic, batch_is)
-               for _ in range(n_batches_is)]
-
-    args_mc = [(lambda_, mu_, t, fault_tree_logic, batch_mc)
-               for _ in range(n_batches_mc)]
-
-    with ProcessPool(nodes=16) as pool:
-        results_is_batches = pool.map(_simulate_batch_is, args_is)
-        results_mc_batches = pool.map(_simulate_batch_mc, args_mc)
-
-    results_is = [r for batch in results_is_batches for r in batch][:n_is]
-    results_mc = [r for batch in results_mc_batches for r in batch][:n_mc]
+    # === IS ===
+    results_is = [simulate_CTMC_simple(lambda_, mu_, alpha, beta, t, fault_tree_logic)
+                  for _ in range(n_is)]
 
     all_log_w = [r['log_w'] for r in results_is]
     top_indicators = [1.0 if r['top'] else 0.0 for r in results_is]
 
-    max_log_w = max(all_log_w) if all_log_w else 0
-    stable_weights = [math.exp(lw - max_log_w) for lw in all_log_w]
+    # Standard IS: p = (1/n) * Σ(w_i * ind_i)
+    valid_log_w = [lw for lw in all_log_w if lw > -700]
 
-    numerator = sum(w * ind for w, ind in zip(stable_weights, top_indicators))
-    denominator = sum(stable_weights)
+    if valid_log_w:
+        max_log_w = max(valid_log_w)
 
-    if denominator > 0:
-        p_is = numerator / denominator
+        numerator = 0.0
+        for lw, ind in zip(all_log_w, top_indicators):
+            if lw > -700:
+                w = math.exp(lw - max_log_w)
+                numerator += w * ind
+
+        p_is = (numerator / n_is) * math.exp(max_log_w)
     else:
         p_is = 0.0
 
     n_top_is = sum(top_indicators)
-    if n_top_is > 0 and denominator > 0:
-        ess = (sum(stable_weights) ** 2) / sum(w ** 2 for w in stable_weights)
-        std_is = math.sqrt(p_is * (1 - p_is) / max(ess, 1))
-    else:
-        std_is = 0.0
 
+    # Calcola std IS
+    if n_top_is > 1:
+        weights_top = []
+        for lw, ind in zip(all_log_w, top_indicators):
+            if ind > 0 and lw > -700:
+                weights_top.append(math.exp(lw))
+        if len(weights_top) > 1 and np.mean(weights_top) > 0:
+            cv_is = np.std(weights_top) / np.mean(weights_top)
+            std_is = p_is * cv_is / math.sqrt(len(weights_top))
+        else:
+            std_is = p_is
+    else:
+        std_is = p_is if p_is > 0 else 0.0
+
+    # === MC ===
+    alpha_mc = {c: 1.0 for c in comps}
+    beta_mc = {c: 1.0 for c in comps}
+    results_mc = [simulate_CTMC_simple(lambda_, mu_, alpha_mc, beta_mc, t, fault_tree_logic)
+                  for _ in range(n_mc)]
     hits = [1.0 if r['top'] else 0.0 for r in results_mc]
     p_mc = np.mean(hits)
-    std_mc = np.std(hits) / np.sqrt(len(hits))
+    std_mc = np.std(hits) / np.sqrt(n_mc)
     n_top_mc = sum(hits)
 
     return {
@@ -87,16 +88,16 @@ def compute_cdf_point(lambda_, mu_, alpha, beta, t, fault_tree_logic, n_is=500, 
     }
 
 
-def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
-                      t_max=100, t_step=5, n_samples_fallback=1000,
-                      training_epochs=30, verbose=True,
-                      use_component_criticality=True):
+def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
+                      t_max=500, t_step=10,
+                      ce_iterations=4, ce_samples=2000,
+                      verbose=True):
+    """
+    Calcola la curva CDF usando DirectPredictor + Adaptive IS.
+    """
     lambda_, mu_ = ft.get_lambda_mu()
     comps = list(lambda_.keys())
     n_comps = len(comps)
-
-    pyg_data = ft.to_pyg_data()
-    pyg_data = pyg_data.to(device)
 
     t_values = np.arange(t_step, t_max + t_step, t_step)
 
@@ -105,71 +106,67 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         'p_is': [], 'p_mc': [],
         'std_is': [], 'std_mc': [],
         'n_samples_is': [], 'n_samples_mc': [],
+        'n_top_is': [], 'n_top_mc': [],
         'alphas': {c: [] for c in comps},
         'betas': {c: [] for c in comps},
-        'ranges_alpha': [], 'ranges_beta': []
     }
 
-    if use_component_criticality:
-        criticality = compute_component_criticality(ft)
-    else:
-        criticality = None
+    n_and = sum(1 for n in ft.nodes if n.get('type') == 'AND')
+    n_or = sum(1 for n in ft.nodes if n.get('type') == 'OR')
 
     if verbose:
-        print("=" * 60)
-        print("CALCOLO CURVA CDF (range adattivi per ogni t)")
+        print("=" * 70)
+        print("CALCOLO CURVA CDF (DirectPredictor + Adaptive IS)")
         print(f"T: [{t_step}, {t_max}], step={t_step}, punti={len(t_values)}")
-        print("=" * 60)
+        print(f"Componenti: {n_comps}, AND: {n_and}, OR: {n_or}")
+        print(f"CE: {ce_iterations} iter, {ce_samples} samples/iter")
+        print("=" * 70)
+
+    pyg_data = ft.to_pyg_data().to(device)
 
     for t in t_values:
         timestamp = datetime.now().strftime('%H:%M:%S')
-        if verbose:
-            print(f"\n[{timestamp}] [T = {t:.0f}] ", end="")
 
-        range_model.to(device)
+        # Step 1: DirectPredictor → α₀, β₀
+        direct_model.eval()
+        alpha_init, beta_init = direct_model.predict(ft, T=t, T_max=float(t_max))
 
-        with torch.no_grad():
-            ranges_pred, _ = range_model(pyg_data, T=t, T_max=500.0)
-
-        ranges_dict = {
-            'alpha': (ranges_pred[0, 0].item(), ranges_pred[0, 1].item()),
-            'beta': (ranges_pred[0, 2].item(), ranges_pred[0, 3].item())
-        }
-
-        if verbose:
-            print(f"α:[{ranges_dict['alpha'][0]:.2f},{ranges_dict['alpha'][1]:.2f}] "
-                  f"β:[{ranges_dict['beta'][0]:.2f},{ranges_dict['beta'][1]:.2f}] | ")
-
+        # Step 2: Determina numero samples
         if sample_model is not None:
             sample_model.to(device)
-            n_is, n_mc = get_predicted_samples(sample_model, pyg_data, T=t, T_max=500.0)
+            n_is, n_mc = get_predicted_samples(sample_model, pyg_data, T=t, T_max=float(t_max))
         else:
-            n_is, n_mc = n_samples_fallback, n_samples_fallback * 5
+            # Fallback heuristic
+            t_factor = max(1.0, 2.5 * (1.0 - t / t_max))
+            and_factor = 1.0 + n_and * 0.1
 
-        config = ExternalConfig(
-            lambda_, mu_, fault_tree_logic, ranges_dict, T=t,
-            graph=ft,
-            use_component_criticality=use_component_criticality
+            base_is = 30000
+            base_mc = 80000
+
+            n_is = int(base_is * t_factor * and_factor)
+            n_mc = int(base_mc * t_factor * and_factor)
+
+            n_is = min(200000, max(20000, n_is))
+            n_mc = min(500000, max(50000, n_mc))
+
+        # Step 3: Cross-Entropy per ottimizzare α, β
+        alpha_opt, beta_opt, ce_stats = adaptive_is_cross_entropy(
+            lambda_, mu_, t, fault_tree_logic,
+            alpha_init, beta_init,
+            n_iterations=ce_iterations,
+            n_samples_per_iter=ce_samples,
+            elite_fraction=0.15,
+            smoothing=0.6,
+            verbose=False
         )
-        config.epochs = training_epochs
-        if n_comps * 17 < 500:
-            config.n_samples = n_comps * 17
-        else:
-            config.n_samples = 500
-        config.n_trajectories = 100
 
-        model = train_mlp_cross_entropy(config, verbose=True)
+        # Step 4: Calcola punto CDF con α, β ottimizzati
+        cdf_point = compute_cdf_point(
+            lambda_, mu_, alpha_opt, beta_opt, t,
+            fault_tree_logic, n_is, n_mc
+        )
 
-        input_tensor = torch.eye(len(comps)).mean(dim=0).unsqueeze(0).to(device)
-        with torch.no_grad():
-            alpha_tensor, beta_tensor = model(input_tensor)
-
-        alpha = {c: alpha_tensor[0, i].item() for i, c in enumerate(comps)}
-        beta = {c: beta_tensor[0, i].item() for i, c in enumerate(comps)}
-
-        cdf_point = compute_cdf_point(lambda_, mu_, alpha, beta, t,
-                                       fault_tree_logic, n_is, n_mc, verbose=True)
-
+        # Salva risultati
         results['t'].append(t)
         results['p_is'].append(cdf_point['p_is'])
         results['p_mc'].append(cdf_point['p_mc'])
@@ -177,59 +174,73 @@ def compute_cdf_curve(ft, fault_tree_logic, range_model, sample_model=None,
         results['std_mc'].append(cdf_point['std_mc'])
         results['n_samples_is'].append(n_is)
         results['n_samples_mc'].append(n_mc)
-        results['ranges_alpha'].append(ranges_dict['alpha'])
-        results['ranges_beta'].append(ranges_dict['beta'])
+        results['n_top_is'].append(cdf_point['n_top_is'])
+        results['n_top_mc'].append(cdf_point['n_top_mc'])
 
         for c in comps:
-            results['alphas'][c].append(alpha[c])
-            results['betas'][c].append(beta[c])
+            results['alphas'][c].append(alpha_opt[c])
+            results['betas'][c].append(beta_opt[c])
 
         if verbose:
-            avg_alpha = np.mean([alpha[c] for c in comps])
-            avg_beta = np.mean([beta[c] for c in comps])
+            avg_alpha_init = np.mean(list(alpha_init.values()))
+            avg_alpha_opt = np.mean(list(alpha_opt.values()))
+            avg_beta_opt = np.mean(list(beta_opt.values()))
+
             cv_is = cdf_point['std_is'] / cdf_point['p_is'] if cdf_point['p_is'] > 0 else float('inf')
             cv_mc = cdf_point['std_mc'] / cdf_point['p_mc'] if cdf_point['p_mc'] > 0 else float('inf')
-            print(f"P_is={cdf_point['p_is']:.2e} (CV={cv_is:.1%}), P_mc={cdf_point['p_mc']:.2e} (CV={cv_mc:.1%}) | "
-                  f"ᾱ={avg_alpha:.2f}, β̄={avg_beta:.2f} | N_IS={n_is}, N_MC={n_mc}")
 
-        if cdf_point['p_mc'] > 0.1:
-            if verbose:
-                print(f"\n[STOP] P_is > 10%, interrompo a T={t}")
-            break
+            cv_is_str = f"{cv_is:.0%}" if cv_is != float('inf') else "inf"
+            cv_mc_str = f"{cv_mc:.0%}" if cv_mc != float('inf') else "inf"
+
+            print(f"[{timestamp}] T={t:3.0f} | "
+                  f"P_is={cdf_point['p_is']:.2e} (CV={cv_is_str}, n={cdf_point['n_top_is']}/{n_is}) | "
+                  f"P_mc={cdf_point['p_mc']:.2e} (CV={cv_mc_str}, n={cdf_point['n_top_mc']}/{n_mc}) | "
+                  f"α: {avg_alpha_init:.1f}→{avg_alpha_opt:.1f} | | "
+                  f"β: {np.mean(list(beta_init.values())):.2f}→{avg_beta_opt:.2f}")
 
     return results
 
 
 def plot_cdf(results, topology_name="FaultTree", save_path=None):
+    """Plotta la curva CDF."""
     t = np.array(results['t'])
     p_is = np.array(results['p_is'])
-    p_is = np.maximum.accumulate(p_is)
     p_mc = np.array(results['p_mc'])
-    p_mc = np.maximum.accumulate(p_mc)
     std_is = np.array(results['std_is'])
     std_mc = np.array(results['std_mc'])
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-    ax.plot(t, p_is, 'b-', linewidth=2, label='Importance Sampling')
-    ax.fill_between(t, p_is - 1.96*std_is, p_is + 1.96*std_is, alpha=0.3, color='blue')
+    # Plot lineare
+    ax1 = axes[0]
+    ax1.plot(t, p_is, 'b-', linewidth=2, label='IS (Adaptive)')
+    ax1.fill_between(t, np.maximum(0, p_is - 1.96*std_is), p_is + 1.96*std_is,
+                     alpha=0.3, color='blue')
+    ax1.plot(t, p_mc, 'r--', linewidth=2, label='Monte Carlo')
+    ax1.fill_between(t, np.maximum(0, p_mc - 1.96*std_mc), p_mc + 1.96*std_mc,
+                     alpha=0.3, color='red')
+    ax1.set_xlabel('Tempo t')
+    ax1.set_ylabel('P(T_fail ≤ t)')
+    ax1.set_title(f'CDF - {topology_name}')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
 
-    ax.plot(t, p_mc, 'r--', linewidth=2, label='Monte Carlo')
-    ax.fill_between(t, p_mc - 1.96*std_mc, p_mc + 1.96*std_mc, alpha=0.3, color='red')
-
-    ax.axhline(y=0.01, color='gray', linestyle=':', linewidth=1, label='P = 1%')
-
-    ax.set_xlabel('Tempo t', fontsize=12)
-    ax.set_ylabel('P(T_fail ≤ t)', fontsize=12)
-    ax.set_title(f'CDF - Probabilità di Fallimento\n{topology_name}', fontsize=14)
-    ax.legend(loc='lower right')
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim([0, max(t) * 1.05])
-    ax.set_ylim([0, max(max(p_is), max(p_mc)) * 1.15])
+    # Plot log
+    ax2 = axes[1]
+    p_is_plot = np.where(p_is > 0, p_is, np.nan)
+    p_mc_plot = np.where(p_mc > 0, p_mc, np.nan)
+    ax2.semilogy(t, p_is_plot, 'b-', linewidth=2, label='IS (Adaptive)')
+    ax2.semilogy(t, p_mc_plot, 'r--', linewidth=2, label='Monte Carlo')
+    ax2.set_xlabel('Tempo t')
+    ax2.set_ylabel('P(T_fail ≤ t) [log]')
+    ax2.set_title(f'CDF (log scale) - {topology_name}')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
 
     if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=150)
         print(f"Salvato: {save_path}")
 
@@ -238,6 +249,7 @@ def plot_cdf(results, topology_name="FaultTree", save_path=None):
 
 
 def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None):
+    """Plotta l'evoluzione di α e β nel tempo."""
     t = np.array(results['t'])
     alphas = results['alphas']
     betas = results['betas']
@@ -248,91 +260,95 @@ def plot_alpha_beta_evolution(results, topology_name="FaultTree", save_path=None
 
     colors = plt.cm.viridis(np.linspace(0, 1, n_comps))
 
+    # Plot alpha
     ax1 = axes[0]
     for i, c in enumerate(comps):
-        ax1.plot(t, alphas[c], 'o-', markersize=4, color=colors[i], linewidth=1.2, alpha=0.8)
+        ax1.plot(t, alphas[c], 'o-', markersize=3, color=colors[i], linewidth=1, alpha=0.7)
     ax1.axhline(y=1.0, color='gray', linestyle=':', linewidth=1, label='α = 1')
     ax1.set_xlabel('Tempo t', fontsize=12)
-    ax1.set_ylabel('α (failure rate multiplier)', fontsize=12)
-    ax1.set_title(f'Evoluzione di α nel tempo\n{topology_name}', fontsize=14)
+    ax1.set_ylabel('α (optimized)', fontsize=12)
+    ax1.set_title(f'Evoluzione di α (dopo CE) - {topology_name}', fontsize=14)
     ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='upper right', fontsize=9)
 
-    ax1.text(0.98, 0.98, f'{n_comps} componenti', transform=ax1.transAxes,
-             ha='right', va='top', fontsize=10, style='italic',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    ax1.legend(loc='lower right', fontsize=9)
-
+    # Plot beta
     ax2 = axes[1]
     for i, c in enumerate(comps):
-        ax2.plot(t, betas[c], 's-', markersize=4, color=colors[i], linewidth=1.2, alpha=0.8)
+        ax2.plot(t, betas[c], 's-', markersize=3, color=colors[i], linewidth=1, alpha=0.7)
     ax2.axhline(y=1.0, color='gray', linestyle=':', linewidth=1, label='β = 1')
     ax2.set_xlabel('Tempo t', fontsize=12)
-    ax2.set_ylabel('β (repair rate multiplier)', fontsize=12)
-    ax2.set_title(f'Evoluzione di β nel tempo\n{topology_name}', fontsize=14)
+    ax2.set_ylabel('β (optimized)', fontsize=12)
+    ax2.set_title(f'Evoluzione di β (dopo CE) - {topology_name}', fontsize=14)
     ax2.grid(True, alpha=0.3)
+    ax2.legend(loc='upper right', fontsize=9)
 
-    ax2.text(0.98, 0.98, f'{n_comps} componenti', transform=ax2.transAxes,
-             ha='right', va='top', fontsize=10, style='italic',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    ax2.legend(loc='lower right', fontsize=9)
-
-    fig.set_constrained_layout(True)
+    plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=150)
         print(f"Salvato: {save_path}")
 
     plt.close(fig)
     return fig
 
 
-def run_cdf_analysis(ft, fault_tree_logic, range_model, topology_name="FaultTree",
-                     t_max=100, t_step=5, sample_model=None,
-                     use_component_criticality=True):
+def run_cdf_analysis(ft, fault_tree_logic, direct_model, topology_name="FaultTree",
+                     t_max=500, t_step=10, sample_model=None,
+                     ce_iterations=5, ce_samples=2000):
+    """
+    Esegue l'analisi CDF completa con Adaptive IS.
+
+    Args:
+        ft: FaultTreeGraph
+        fault_tree_logic: funzione logica
+        direct_model: DirectPredictor già addestrato
+        topology_name: nome per i file
+        t_max, t_step: parametri temporali
+        sample_model: SamplePredictor (opzionale)
+        ce_iterations: iterazioni Cross-Entropy (default 4)
+        ce_samples: samples per iterazione CE (default 2500)
+
+    Returns:
+        dict con risultati
+    """
+    # Crea directory
     os.makedirs('../results/CDF', exist_ok=True)
     os.makedirs('../results/ALFA_BETA', exist_ok=True)
+
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    # 1. Calcola CDF con range adattivi per ogni t
+    # Calcola CDF
     results = compute_cdf_curve(
-        ft, fault_tree_logic, range_model,
+        ft, fault_tree_logic, direct_model,
         sample_model=sample_model,
         t_max=t_max, t_step=t_step,
-        use_component_criticality=use_component_criticality
+        ce_iterations=ce_iterations,
+        ce_samples=ce_samples
     )
 
-    cdf_path = f'results/CDF/cdf_{topology_name}_{timestamp}.png'
+    # Plot CDF
+    cdf_path = f'../results/CDF/cdf_{topology_name}_{timestamp}.png'
     plot_cdf(results, topology_name, save_path=cdf_path)
 
-    ab_path = f'results/ALFA_BETA/alpha_beta_{topology_name}_{timestamp}.png'
+    # Plot α, β
+    ab_path = f'../results/ALFA_BETA/alpha_beta_{topology_name}_{timestamp}.png'
     plot_alpha_beta_evolution(results, topology_name, save_path=ab_path)
 
-    data_path = f'results/CDF/cdf_data_{topology_name}_{timestamp}.txt'
+    # Salva dati
+    data_path = f'../results/CDF/cdf_data_{topology_name}_{timestamp}.txt'
     with open(data_path, 'w') as f:
         f.write(f"Topologia: {topology_name}\n")
         f.write(f"T_max: {t_max}, Step: {t_step}\n")
-        f.write(f"Criticità per componente: {use_component_criticality}\n")
-        f.write("=" * 60 + "\n\n")
+        f.write(f"Metodo: DirectPredictor + Adaptive IS (CE iter={ce_iterations})\n")
+        f.write("=" * 70 + "\n\n")
 
-        f.write("t\tRange_α\tRange_β\tP_is\tP_mc\tstd_is\tstd_mc\n")
+        f.write("t\tP_is\tP_mc\tstd_is\tstd_mc\tn_top_is\tn_top_mc\n")
         for i, t in enumerate(results['t']):
-            r_a = results['ranges_alpha'][i]
-            r_b = results['ranges_beta'][i]
-            f.write(f"{t:.1f}\t[{r_a[0]:.2f},{r_a[1]:.2f}]\t[{r_b[0]:.2f},{r_b[1]:.2f}]\t"
-                    f"{results['p_is'][i]:.6e}\t{results['p_mc'][i]:.6e}\t"
-                    f"{results['std_is'][i]:.6e}\t{results['std_mc'][i]:.6e}\n")
+            f.write(f"{t:.1f}\t{results['p_is'][i]:.6e}\t{results['p_mc'][i]:.6e}\t"
+                    f"{results['std_is'][i]:.6e}\t{results['std_mc'][i]:.6e}\t"
+                    f"{results['n_top_is'][i]}\t{results['n_top_mc'][i]}\n")
 
-        f.write("\n" + "=" * 60 + "\n")
-        f.write("ALPHA per componente:\n")
-        for c in results['alphas']:
-            vals = [f"{v:.3f}" for v in results['alphas'][c]]
-            f.write(f"  {c}: {vals}\n")
-
-        f.write("\nBETA per componente:\n")
-        for c in results['betas']:
-            vals = [f"{v:.3f}" for v in results['betas'][c]]
-            f.write(f"  {c}: {vals}\n")
-
-    print(f"Dati salvati: {data_path}")
+    print(f"\nDati salvati: {data_path}")
 
     return results
