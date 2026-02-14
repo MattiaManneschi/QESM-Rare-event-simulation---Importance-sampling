@@ -19,9 +19,6 @@ if __name__ == "__main__":
     DIRECT_MODEL_PATH = os.path.join(MODELS_DIR, 'direct_predictor.pth')
     SAMPLE_MODEL_PATH = os.path.join(MODELS_DIR, 'sample_predictor.pth')
 
-    # ===== LOAD O TRAIN MODELLI =====
-
-    # DirectPredictor
     if os.path.exists(DIRECT_MODEL_PATH):
         direct_model = DirectPredictor().to(device)
         direct_model.load_state_dict(torch.load(DIRECT_MODEL_PATH, map_location=device))
@@ -36,7 +33,6 @@ if __name__ == "__main__":
         torch.save(direct_model.state_dict(), DIRECT_MODEL_PATH)
         print(f"[DirectPredictor] Salvato in {DIRECT_MODEL_PATH}")
 
-    # SamplePredictor
     if os.path.exists(SAMPLE_MODEL_PATH):
         sample_model = SamplePredictor().to(device)
         sample_model.load_state_dict(torch.load(SAMPLE_MODEL_PATH, map_location=device))
@@ -50,8 +46,6 @@ if __name__ == "__main__":
         )
         torch.save(sample_model.state_dict(), SAMPLE_MODEL_PATH)
         print(f"[SamplePredictor] Salvato in {SAMPLE_MODEL_PATH}")
-
-    # ===== RUN CDF =====
 
     iterations = 1
 
