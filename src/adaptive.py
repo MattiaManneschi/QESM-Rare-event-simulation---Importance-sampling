@@ -1,11 +1,6 @@
-"""
-Adaptive Importance Sampling con Cross-Entropy Method.
-
-Usa DirectPredictor per α₀ iniziale, poi raffina con CE.
-"""
+import math
 
 import numpy as np
-import math
 
 
 def adaptive_is_cross_entropy(
@@ -17,29 +12,11 @@ def adaptive_is_cross_entropy(
     smoothing=0.7,
     verbose=False
 ):
-    """
-    Cross-Entropy Method per ottimizzare α, β.
 
-    Args:
-        lambda_, mu_: parametri CTMC
-        T: tempo target
-        fault_tree: funzione logica
-        alpha_init, beta_init: valori iniziali (da DirectPredictor)
-        n_iterations: iterazioni CE
-        n_samples_per_iter: samples per iterazione
-        elite_fraction: frazione di elite (es. 0.1 = top 10%)
-        smoothing: peso per smoothing (0.7 = 70% nuovo, 30% vecchio)
-        verbose: stampa progresso
-
-    Returns:
-        alpha_opt, beta_opt: parametri ottimizzati
-        stats: statistiche del processo
-    """
     from direct_predictor import simulate_CTMC_simple
 
     comps = list(lambda_.keys())
 
-    # Inizializza
     alpha = {c: alpha_init[c] for c in comps}
     beta = {c: beta_init[c] for c in comps}
 
@@ -61,20 +38,18 @@ def adaptive_is_cross_entropy(
         print(f"{'='*60}")
 
     for iteration in range(n_iterations):
-        # Simula con α, β correnti
+
         results = [
             simulate_CTMC_simple(lambda_, mu_, alpha, beta, T, fault_tree)
             for _ in range(n_samples_per_iter)
         ]
 
-        # Trova traiettorie con top event
         top_results = [r for r in results if r['top']]
         n_top = len(top_results)
 
         if verbose:
             print(f"Iter {iteration+1}: n_top = {n_top}/{n_samples_per_iter} ({100*n_top/n_samples_per_iter:.1f}%)")
 
-        # Se troppo pochi top events, aumenta α
         if n_top < n_elite:
             if verbose:
                 print(f"  → Troppo pochi top events, aumento α di 1.3x")
@@ -87,7 +62,6 @@ def adaptive_is_cross_entropy(
             stats['cv'].append(float('inf'))
             continue
 
-        # Se troppi top events, riduci α
         if n_top > n_samples_per_iter * 0.5:
             if verbose:
                 print(f"  → Troppi top events, riduco α di 0.8x")
@@ -100,52 +74,37 @@ def adaptive_is_cross_entropy(
             stats['cv'].append(float('inf'))
             continue
 
-        # Seleziona elite basandosi sul likelihood ratio
-        # Elite = top events con peso più alto (più "naturali")
         top_with_weights = [(r, r['log_w']) for r in top_results]
         top_with_weights.sort(key=lambda x: x[1], reverse=True)
         elite = [r for r, w in top_with_weights[:n_elite]]
-
-        # Calcola statistiche per update
-        # Per CTMC, α ottimale è proporzionale al rate di failure osservato nelle elite
-        # Approssimiamo con: α_new ∝ (n_failures nelle elite) / (tempo totale nelle elite)
 
         alpha_new = {}
         beta_new = {}
 
         for c in comps:
-            # Stima α: basata su quanto spesso il componente fallisce nelle elite
-            # Qui usiamo una formula semplificata
-
-            # Per ora, aggiustiamo α basandoci sul top_rate
-            # Se top_rate è nel range ideale (10-30%), manteniamo α
-            # Altrimenti aggiustiamo
 
             top_rate = n_top / n_samples_per_iter
 
             if top_rate < 0.1:
-                # Pochi top events, aumenta α
+
                 scale = 1.0 + (0.1 - top_rate) * 2
             elif top_rate > 0.3:
-                # Troppi top events, riduci α
+
                 scale = 1.0 - (top_rate - 0.3) * 0.5
             else:
-                # Range ideale
+
                 scale = 1.0
 
             alpha_new[c] = alpha[c] * scale
             alpha_new[c] = max(1.0, min(200.0, alpha_new[c]))
 
-            # β: aggiusta in modo simile ma più conservativo
             beta_new[c] = beta[c] * (1.0 + (scale - 1.0) * 0.3)
             beta_new[c] = max(1.0, min(10.0, beta_new[c]))
 
-        # Smoothing: combina vecchio e nuovo
         for c in comps:
             alpha[c] = smoothing * alpha_new[c] + (1 - smoothing) * alpha[c]
             beta[c] = smoothing * beta_new[c] + (1 - smoothing) * beta[c]
 
-        # Calcola CV per questa iterazione
         weights = [math.exp(r['log_w']) for r in top_results if r['log_w'] > -700]
         if len(weights) > 1:
             cv = np.std(weights) / np.mean(weights) if np.mean(weights) > 0 else float('inf')
@@ -175,18 +134,10 @@ def compute_cdf_point_adaptive(
     ce_samples=3000,
     verbose=False
 ):
-    """
-    Calcola un punto CDF usando Adaptive IS.
-
-    1. Parte da α₀, β₀ (da DirectPredictor)
-    2. Raffina con Cross-Entropy (poche iterazioni)
-    3. Stima P con α, β ottimizzati
-    """
     from direct_predictor import simulate_CTMC_simple
 
     comps = list(lambda_.keys())
 
-    # Step 1: Cross-Entropy per ottimizzare α, β
     alpha_opt, beta_opt, ce_stats = adaptive_is_cross_entropy(
         lambda_, mu_, T, fault_tree,
         alpha_init, beta_init,
@@ -197,13 +148,11 @@ def compute_cdf_point_adaptive(
         verbose=verbose
     )
 
-    # Step 2: Stima IS con α, β ottimizzati
     results_is = [
         simulate_CTMC_simple(lambda_, mu_, alpha_opt, beta_opt, T, fault_tree)
         for _ in range(n_is)
     ]
 
-    # Calcola P_is (standard IS)
     all_log_w = [r['log_w'] for r in results_is]
     top_indicators = [1.0 if r['top'] else 0.0 for r in results_is]
 
@@ -224,7 +173,6 @@ def compute_cdf_point_adaptive(
 
     n_top_is = sum(top_indicators)
 
-    # Calcola std IS
     if n_top_is > 1:
         weights_top = []
         for lw, ind in zip(all_log_w, top_indicators):
@@ -238,7 +186,6 @@ def compute_cdf_point_adaptive(
     else:
         std_is = p_is if p_is > 0 else 0.0
 
-    # Step 3: MC per confronto
     alpha_mc = {c: 1.0 for c in comps}
     beta_mc = {c: 1.0 for c in comps}
 
