@@ -1,34 +1,17 @@
-"""
-DirectPredictor v2: GNN che predice α, β per ogni componente direttamente.
-
-Training Hybrid:
-- Fase 1: Supervised Learning (MSE) con target euristici
-- Fase 2: Reinforcement Learning (Policy Gradient) con reward basato su CV reale
-
-Questo approccio combina:
-- Stabilità del supervised learning (buon punto di partenza)
-- Ottimalità del RL (minimizza CV reale)
-"""
-
 import random
+from collections import defaultdict
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch_geometric.data import Data
 from torch_geometric.nn import GATConv, global_mean_pool
-import torch.nn.functional as F
-from collections import defaultdict
-
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-# =============================================================================
-# FAULT TREE GRAPH
-# =============================================================================
-
 class FaultTreeGraph:
-    """Rappresentazione di un fault tree come grafo."""
 
     def __init__(self):
         self.nodes = []
@@ -103,21 +86,12 @@ class FaultTreeGraph:
         return [node['idx'] for node in self.nodes if node['type'] == 'component']
 
     def get_min_distance_to_top_event(self):
-        """
-        Calcola la distanza minima di ogni componente dal Top Event.
-        In questo FaultTreeGraph, la radice è l'ultimo nodo e gli archi
-        vanno dai figli verso i padri.
-        """
-        # 1. Costruiamo una lista di adiacenza inversa (da padre a figli)
-        # per scendere dalla radice verso i componenti
         adj_inv = {i: [] for i in range(len(self.nodes))}
         for child, parent in self.edges:
             adj_inv[parent].append(child)
 
-        # 2. La radice è l'ultimo nodo aggiunto
         root_idx = len(self.nodes) - 1
 
-        # 3. BFS per calcolare le distanze dalla radice
         distances = {root_idx: 0}
         queue = [root_idx]
 
@@ -130,23 +104,18 @@ class FaultTreeGraph:
                     distances[child] = curr_dist + 1
                     queue.append(child)
 
-        # 4. Estraiamo solo le distanze per i nodi di tipo 'component'
         component_depths = {}
         for node in self.nodes:
             if node['type'] == 'component':
                 name = node['name']
                 idx = node['idx']
-                # Se il componente non è raggiungibile (strano), mettiamo un default
+
                 component_depths[name] = distances.get(idx, 5)
 
         return component_depths
 
-# =============================================================================
-# CRITICALITY COMPUTATION
-# =============================================================================
 
 def compute_component_criticality(graph):
-    """Calcola la criticità di ogni componente basata sulla topologia."""
     child_to_parents = defaultdict(list)
     for src, dst in graph.edges:
         child_to_parents[src].append(dst)
@@ -196,10 +165,6 @@ def compute_component_criticality(graph):
     return criticality
 
 
-# =============================================================================
-# CTMC SIMULATION (simplified version for training)
-# =============================================================================
-
 def simulate_CTMC_simple(lambda_, mu_, alpha, beta, T, fault_tree):
     comps = list(lambda_.keys())
     state = {c: 0 for c in comps}
@@ -208,7 +173,7 @@ def simulate_CTMC_simple(lambda_, mu_, alpha, beta, T, fault_tree):
     log_w = 0.0
     top_event_hit = False
     n_transitions = 0
-    max_transitions = 5000 # Ridotto per velocità
+    max_transitions = 5000 
 
     while t < T and n_transitions < max_transitions:
         rates_orig = {}
@@ -227,19 +192,15 @@ def simulate_CTMC_simple(lambda_, mu_, alpha, beta, T, fault_tree):
 
         if R_is <= 0: break
 
-        # 1. Campionamento del tempo di soggiorno
         dt = np.random.exponential(1.0 / R_is)
 
         if t + dt > T:
-            # Termine di likelihood per il tempo residuo fino a T
             log_w += (R_is - R_orig) * (T - t)
             break
 
-        # CORREZIONE: Aggiunto log(R_orig / R_is)
         t += dt
         log_w += (R_is - R_orig) * dt + np.log(R_orig / R_is)
 
-        # 2. Campionamento della transizione
         r = np.random.random() * R_is
         cumsum = 0.0
         chosen_event = None
@@ -251,13 +212,7 @@ def simulate_CTMC_simple(lambda_, mu_, alpha, beta, T, fault_tree):
 
         if chosen_event is None: break
 
-        # Aggiorna log_w per la scelta della transizione specifica
-        # log( (rate_orig/R_orig) / (rate_is/R_is) )
         log_w += np.log(rates_orig[chosen_event] / rates_is[chosen_event]) + np.log(R_is / R_orig)
-
-        # Nota: i due termini np.log(R_is / R_orig) e quello sopra si cancellano
-        # semplificando in: log_w += np.log(rates_orig[chosen_event] / rates_is[chosen_event])
-        # ma tenerli separati concettualmente aiuta a non fare errori.
 
         event_type, comp = chosen_event
         state[comp] = 1 if event_type == 'fail' else 0
@@ -275,33 +230,21 @@ def simulate_CTMC_simple(lambda_, mu_, alpha, beta, T, fault_tree):
     }
 
 
-# =============================================================================
-# DIRECT PREDICTOR MODEL
-# =============================================================================
-
 class DirectPredictor(nn.Module):
-    """
-    GNN ottimizzata per eventi rari.
-    Usa Softplus per output illimitati e cattura la complessità strutturale.
-    """
-
     def __init__(self, node_features=5, hidden_dim=64, n_layers=4):
         super().__init__()
 
-        # GNN layers con attention
         self.convs = nn.ModuleList()
         self.convs.append(GATConv(node_features, hidden_dim, heads=4, concat=False))
         for _ in range(n_layers - 1):
             self.convs.append(GATConv(hidden_dim, hidden_dim, heads=4, concat=False))
 
-        # Global context encoder
         self.global_encoder = nn.Sequential(
             nn.Linear(hidden_dim, 64),
             nn.ReLU(),
             nn.Linear(64, hidden_dim)
         )
 
-        # Head per alpha: rimosso il limite superiore della sigmoid
         self.alpha_head = nn.Sequential(
             nn.Linear(hidden_dim * 2, 64),
             nn.ReLU(),
@@ -311,7 +254,6 @@ class DirectPredictor(nn.Module):
             nn.Linear(32, 1)
         )
 
-        # Head per beta
         self.beta_head = nn.Sequential(
             nn.Linear(hidden_dim * 2, 64),
             nn.ReLU(),
@@ -321,7 +263,6 @@ class DirectPredictor(nn.Module):
             nn.Linear(32, 1)
         )
 
-        # Log std per sampling (RL) - Inizializzati per favorire l'esplorazione iniziale
         self.log_std_alpha = nn.Parameter(torch.ones(1) * 0.7)
         self.log_std_beta = nn.Parameter(torch.zeros(1))
 
@@ -333,46 +274,34 @@ class DirectPredictor(nn.Module):
         else:
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
-        # Calcolo time_decay (usato SOLO alla fine, non come feature)
         T_normalized = T / T_max
         time_decay = (1.0 - T_normalized) ** 1.5
 
-        # La GNN vede SOLO la struttura del grafo, non T
-        # (Rimosso: injection di t_features)
-
-        # GNN message passing
         for conv in self.convs:
             x = F.relu(conv(x, edge_index))
             x = F.dropout(x, p=0.1, training=self.training)
 
-        # Global context pooling
         global_context = global_mean_pool(x, batch)
         global_context = self.global_encoder(global_context)
 
-        # Espansione del contesto globale a tutti i nodi
         if global_context.size(0) == 1:
             global_expanded = global_context.expand(x.size(0), -1)
         else:
             global_expanded = global_context[batch]
 
-        # Concatena node features + global context
         node_features = torch.cat([x, global_expanded], dim=1)
 
-        # Alpha e Beta RAW dalla GNN (indipendenti da T)
         alpha_raw = self.alpha_head(node_features).squeeze(-1)
         beta_raw = self.beta_head(node_features).squeeze(-1)
 
-        # Alpha base: valore strutturale dalla GNN
         alpha_base = 1.0 + F.softplus(alpha_raw) * 15.0
 
-        # Beta (poco sensibile a T)
         beta_mean = 1.0 + F.softplus(beta_raw) * 0.5
 
-        # Applica time_decay: α decresce verso 1 per T grandi
         alpha_mean = 1.0 + (alpha_base - 1.0) * time_decay
 
         if sample:
-            # Sampling per RL
+
             std_alpha = (torch.exp(self.log_std_alpha) * (1.0 + alpha_mean * 0.1)).clamp(0.01, 30.0)
             std_beta = torch.exp(self.log_std_beta).clamp(0.01, 0.5)
 
@@ -403,17 +332,8 @@ class DirectPredictor(nn.Module):
 
         return alpha_dict, beta_dict
 
-# =============================================================================
-# TARGET COMPUTATION (for supervised phase)
-# =============================================================================
 
 def compute_target_alpha_beta(graph, T, T_max):
-    """
-    Calcola target euristici per α e β.
-
-    α decresce monotonicamente da un valore alto (T=0) verso 1 (T=T_max).
-    Nessun floor artificiale che impedisce il decay.
-    """
     criticality = compute_component_criticality(graph)
     depths = graph.get_min_distance_to_top_event()
 
@@ -422,10 +342,8 @@ def compute_target_alpha_beta(graph, T, T_max):
 
     T_normalized = T / T_max
 
-    # Time decay SENZA floor - va davvero a 0 per T = T_max
     time_decay = (1.0 - T_normalized) ** 1.5
 
-    # Base alpha proporzionale alla complessità
     base_alpha = 5.0 + n_and * 2.0
 
     target_alpha = {}
@@ -435,45 +353,32 @@ def compute_target_alpha_beta(graph, T, T_max):
         crit = criticality.get(name, 0.5)
         d = depths.get(name, 1)
 
-        # Depth factor moderato (range 1.0 - 2.0)
         depth_factor = 0.8 + (d * 0.2)
 
-        # Alpha: parte da valore alto, DECRESCE verso 1
         alpha_base = base_alpha * crit * depth_factor
         alpha_val = 1.0 + alpha_base * time_decay
 
-        # Floor a 1, cap a 250
         target_alpha[name] = np.clip(alpha_val, 1.0, 250.0)
 
-        # Beta: leggero decay, range 1.0 - 1.5
         target_beta[name] = 1.0 + (0.5 * crit * time_decay)
         target_beta[name] = max(1.0, target_beta[name])
 
     return target_alpha, target_beta
 
-# =============================================================================
-# REWARD COMPUTATION (for RL phase)
-# =============================================================================
 
 import numpy as np
 import math
 
 
 def compute_reward(alpha_dict, beta_dict, target_alpha, graph, fault_tree, T, n_simulations=500):
-    """
-    Versione con REWARD SHAPING: fornisce un gradiente anche quando
-    il Top Event non viene raggiunto, evitando il 'muro' del -100.
-    """
     lambda_, mu_ = graph.get_lambda_mu()
     component_names = graph.get_component_names()
 
-    # 1. Simulazione
     results = []
     for _ in range(n_simulations):
         r = simulate_CTMC_simple(lambda_, mu_, alpha_dict, beta_dict, T, fault_tree)
         results.append(r)
 
-    # 2. Estrazione pesi e calcolo top_rate
     all_weights = []
     for r in results:
         if r['top']:
@@ -486,26 +391,15 @@ def compute_reward(alpha_dict, beta_dict, target_alpha, graph, fault_tree, T, n_
     n_top = np.sum(all_weights > 0)
     top_rate = n_top / n_simulations
 
-    # ==========================================================================
-    # 3. GESTIONE CASO "NESSUN GUASTO" (Il cuore della modifica)
-    # ==========================================================================
     if n_top == 0:
-        # Calcoliamo quanto la rete si è allontanata dall'euristica (Fase 1)
-        # Questo serve come "bussola" per non far vagare la rete nel buio.
         mse_dist = np.mean([
             (alpha_dict[name] - target_alpha[name]) ** 2
             for name in component_names if name in target_alpha
         ])
 
-        # Reward dinamico tra -100 e -10.
-        # Più la rete si avvicina ai target della Fase 1, più il reward sale,
-        # incoraggiando la rete a esplorare zone dove i guasti sono probabili.
         shaped_penalty = -100.0 + (90.0 / (1.0 + mse_dist))
         return shaped_penalty, float('inf'), 0.0
 
-    # ==========================================================================
-    # 4. CALCOLO REWARD STANDARD (Quando abbiamo guasti)
-    # ==========================================================================
     mean_w = np.mean(all_weights)
     std_w = np.std(all_weights)
 
@@ -514,28 +408,21 @@ def compute_reward(alpha_dict, beta_dict, target_alpha, graph, fault_tree, T, n_
 
     cv = std_w / mean_w
 
-    # Reward esponenziale basato sul CV
     target_cv = 0.2
     base_reward = 100.0 * np.exp(-cv / target_cv)
 
-    # Penalità per CV estremi
     if cv > 2.0:
         base_reward -= (cv * 5.0)
 
-    # Bonus/Penalità zona "Goldilocks" (Efficienza del Biasing)
     if 0.1 <= top_rate <= 0.4:
         base_reward += 20.0
     elif top_rate > 0.6:
-        base_reward -= 20.0  # Over-biasing (distrugge il CV)
+        base_reward -= 20.0  
     elif top_rate < 0.05:
-        base_reward -= 10.0  # Sotto-campionamento
+        base_reward -= 10.0  
 
     return base_reward, cv, top_rate
 
-
-# =============================================================================
-# HYBRID TRAINING
-# =============================================================================
 
 def train_direct_predictor_hybrid(
     n_iterations_supervised=1500,
@@ -546,13 +433,6 @@ def train_direct_predictor_hybrid(
     n_simulations_rl=2000,
     verbose=True
 ):
-    """
-    Training ibrido: Supervised + RL.
-
-    Fase 1 (Supervised): Impara α, β approssimativi con MSE
-    Fase 2 (RL): Ottimizza α, β per minimizzare CV reale
-    """
-
     from src.fault_tree_generator import generate_rare_event_fault_tree
 
     if pretrained_model is not None:
@@ -563,10 +443,6 @@ def train_direct_predictor_hybrid(
         print("[Hybrid] Training da zero")
 
     T_min, T_max = T_range
-
-    # ==========================================================================
-    # FASE 1: SUPERVISED LEARNING
-    # ==========================================================================
 
     print("\n" + "=" * 70)
     print("FASE 1: SUPERVISED LEARNING")
@@ -580,18 +456,14 @@ def train_direct_predictor_hybrid(
     for iteration in range(n_iterations_supervised):
         model.train()
 
-        # Genera fault tree
         ft_data = generate_rare_event_fault_tree(comp_range, target_p_order=-5)
         graph = ft_data['graph']
         pyg_data = graph.to_pyg_data().to(device)
 
-        # Campiona T
         T = random.uniform(T_min, T_max)
 
-        # Forward
         alpha_pred, beta_pred, _ = model.forward(pyg_data, T, T_max, sample=False)
 
-        # Target
         target_alpha, target_beta = compute_target_alpha_beta(graph, T, T_max)
         component_names = graph.get_component_names()
         component_indices = graph.get_component_indices()
@@ -604,10 +476,8 @@ def train_direct_predictor_hybrid(
         alpha_pred_comp = alpha_pred[component_indices]
         beta_pred_comp = beta_pred[component_indices]
 
-        # Loss MSE
         loss = F.mse_loss(torch.log(alpha_pred_comp), torch.log(alpha_target)) + F.mse_loss(torch.log(beta_pred_comp), torch.log(beta_target))
 
-        # Backprop
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -628,10 +498,6 @@ def train_direct_predictor_hybrid(
 
     print("\n✓ Fase 1 completata!")
 
-    # ==========================================================================
-    # FASE 2: REINFORCEMENT LEARNING
-    # ==========================================================================
-
     print("\n" + "=" * 70)
     print("FASE 2: REINFORCEMENT LEARNING")
     print(f"Iterazioni: {n_iterations_rl}")
@@ -641,49 +507,40 @@ def train_direct_predictor_hybrid(
 
     optimizer_rl = optim.Adam(model.parameters(), lr=1e-4)
 
-    # Baseline per variance reduction
     baseline = 0.0
     baseline_decay = 0.95
 
     for iteration in range(n_iterations_rl):
         model.train()
 
-        # Genera fault tree
         ft_data = generate_rare_event_fault_tree(comp_range, target_p_order=-5)
         graph = ft_data['graph']
         fault_tree = ft_data['fault_tree']
         pyg_data = graph.to_pyg_data().to(device)
 
-        # Campiona T (focus su T piccoli dove IS è più importante)
         if random.random() < 0.6:
-            T = random.uniform(T_min, T_max * 0.3)  # 60% su T piccoli
+            T = random.uniform(T_min, T_max * 0.3)  
         else:
             T = random.uniform(T_min, T_max)
 
-        # Forward con sampling
         alpha_all, beta_all, log_prob = model.forward(pyg_data, T, T_max, sample=True)
 
-        # Estrai valori per componenti
         component_names = graph.get_component_names()
         component_indices = graph.get_component_indices()
 
         alpha_dict = {name: alpha_all[idx].item() for name, idx in zip(component_names, component_indices)}
         beta_dict = {name: beta_all[idx].item() for name, idx in zip(component_names, component_indices)}
 
-        # Calcola reward
         reward, cv, top_rate = compute_reward(
             alpha_dict, beta_dict, target_alpha, graph, fault_tree, T,
             n_simulations=n_simulations_rl
         )
 
-        # Update baseline
         baseline = baseline_decay * baseline + (1 - baseline_decay) * reward
 
-        # Policy gradient loss
         advantage = reward - baseline
         loss = -advantage * log_prob
 
-        # Backprop
         optimizer_rl.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
@@ -706,15 +563,7 @@ def train_direct_predictor_hybrid(
     return model
 
 
-# =============================================================================
-# CONVENIENCE FUNCTION
-# =============================================================================
-
 def train_direct_predictor(n_iterations, T_range, comp_range, pretrained_model=None):
-    """
-    Wrapper per compatibilità con codice esistente.
-    Usa training hybrid con split 75% supervised, 25% RL.
-    """
     n_sup = int(n_iterations * 0.75)
     n_rl = n_iterations - n_sup
 
@@ -735,37 +584,16 @@ def train_direct_predictor_incremental(
     n_simulations_rl=1000,
     verbose=True
 ):
-    """
-    Training incrementale su più stage di complessità.
-
-    Esempio:
-        model = train_direct_predictor_incremental(
-            stages=[(2, 15), (10, 25), (20, 40), (30, 50)],
-            n_iterations_per_stage=1000
-        )
-
-    Args:
-        stages: lista di (min_comp, max_comp) per ogni stage
-        n_iterations_per_stage: iterazioni totali per stage
-        supervised_ratio: frazione supervised (resto è RL)
-        T_range: range temporale
-        n_simulations_rl: simulazioni per reward RL
-        verbose: stampa progress
-
-    Returns:
-        modello finale addestrato su tutti gli stage
-    """
     model = None
 
     for i, comp_range in enumerate(stages):
-        print(f"\n{'#'*70}")
-        print(f"# STAGE {i+1}/{len(stages)}: componenti {comp_range}")
-        print(f"{'#'*70}")
+        print(f"\n{'#' * 70}")
+        print(f"# STAGE {i + 1}/{len(stages)}: componenti {comp_range}")
+        print(f"{'#' * 70}")
 
         n_sup = int(n_iterations_per_stage * supervised_ratio)
         n_rl = n_iterations_per_stage - n_sup
 
-        # Riduci n_simulations per stage avanzati (più lenti)
         n_sim = max(50, n_simulations_rl - i * 20)
 
         model = train_direct_predictor_hybrid(
@@ -778,11 +606,11 @@ def train_direct_predictor_incremental(
             verbose=verbose
         )
 
-        print(f"\n✓ Stage {i+1} completato!")
+        print(f"\n✓ Stage {i + 1} completato!")
 
-    print(f"\n{'#'*70}")
+    print(f"\n{'#' * 70}")
     print(f"# TRAINING INCREMENTALE COMPLETATO")
     print(f"# Stages: {stages}")
-    print(f"{'#'*70}")
+    print(f"{'#' * 70}")
 
     return model
