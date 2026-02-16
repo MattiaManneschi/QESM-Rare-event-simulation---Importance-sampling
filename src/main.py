@@ -49,10 +49,12 @@ if __name__ == "__main__":
 
     iterations = 1
 
+    target_order = -7
+
     for iteration in range(iterations):
-        ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=-7)
+        ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=-target_order)
         log_p = _estimate_tree_log_prob(ft_data['graph'])
-        print(f"DEBUG: target=-8, actual log_p={log_p:.1f}")
+        print(f"DEBUG: target={target_order}, actual log_p={log_p:.1f}")
         print(f"TOPOLOGIA: {ft_data['structure']}")
         results = run_cdf_analysis(
             ft_data['graph'],
