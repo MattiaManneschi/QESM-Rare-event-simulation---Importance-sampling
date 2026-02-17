@@ -61,8 +61,8 @@ if __name__ == "__main__":
             ft_data['fault_tree'],
             direct_model,
             topology_name=ft_data['structure'],
-            t_max=250,
-            t_step=5,
+            t_max=1000,
+            t_step=1,
             sample_model=sample_model
         )
 
