@@ -27,7 +27,7 @@ if __name__ == "__main__":
         print("[DirectPredictor] Training incrementale...")
         direct_model = train_direct_predictor_incremental(
             stages=[(15, 30), (30, 45)],
-            n_iterations_per_stage=2000,
+            n_iterations_per_stage=3000,
             T_range=(10, 500)
         )
         torch.save(direct_model.state_dict(), DIRECT_MODEL_PATH)
@@ -41,15 +41,15 @@ if __name__ == "__main__":
         print("[SamplePredictor] Training incrementale...")
         sample_model = train_sample_predictor_incremental(
             stages=[(15, 30), (30, 45)],
-            n_iterations_per_stage=2000,
-            T_range=(10, 500)
+            n_iterations_per_stage=3000,
+            T_range=(1, 1000)
         )
         torch.save(sample_model.state_dict(), SAMPLE_MODEL_PATH)
         print(f"[SamplePredictor] Salvato in {SAMPLE_MODEL_PATH}")
 
     iterations = 1
 
-    target_order = -7
+    target_order = -9
 
     for iteration in range(iterations):
         ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=-target_order)
@@ -61,7 +61,7 @@ if __name__ == "__main__":
             ft_data['fault_tree'],
             direct_model,
             topology_name=ft_data['structure'],
-            t_max=1000,
+            t_max=100,
             t_step=1,
             sample_model=sample_model
         )

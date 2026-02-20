@@ -11,39 +11,29 @@ from src.fault_tree_generator import generate_rare_event_fault_tree
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# 6 bucket per IS: da 10^5 a 10^10
 IS_BUCKETS = [
-    5000,
-    10000,
-    15000,
-    25000,
-    40000,
-    60000,
-    100000,
-    150000,
-    250000,
-    400000,
-    600000,
-    750000,  
+    int(1e5),  # 0: 10^5 = 100,000
+    int(1e6),  # 1: 10^6 = 1,000,000
+    int(1e7),  # 2: 10^7 = 10,000,000
+    int(1e8),  # 3: 10^8 = 100,000,000
+    int(1e9),  # 4: 10^9 = 1,000,000,000
+    int(1e10),  # 5: 10^10 = 10,000,000,000
 ]
 
-
+# 6 bucket per MC: da 10^5 a 10^10
 MC_BUCKETS = [
-    10000,
-    20000,
-    35000,
-    50000,
-    80000,
-    120000,
-    200000,
-    350000,
-    500000,
-    750000,
-    1000000,
-    1500000,  
+    int(1e5),  # 0: 10^5
+    int(1e6),  # 1: 10^6
+    int(1e7),  # 2: 10^7
+    int(1e8),  # 3: 10^8
+    int(1e9),  # 4: 10^9
+    int(1e10),  # 5: 10^10
 ]
 
 
 def get_bucket_index(n, buckets):
+    """Trova l'indice del bucket appropriato."""
     for i, b in enumerate(buckets):
         if n <= b:
             return i
@@ -51,35 +41,55 @@ def get_bucket_index(n, buckets):
 
 
 def get_bucket_value(idx, buckets):
+    """Restituisce il valore del bucket dato l'indice."""
     idx = max(0, min(idx, len(buckets) - 1))
     return buckets[idx]
 
 
 def get_samples_heuristic(T, n_components, n_AND, n_OR, T_max=500):
+    """
+    Euristica basata su ordini di grandezza.
+
+    Stima l'ordine di P e calcola samples necessari:
+    - MC: deve avere abbastanza samples per ~10 hit → 10^(-P_order + 1)
+    - IS: più efficiente, ~2 ordini di grandezza in meno
+    """
     T_ratio = max(0.01, min(1.0, T / T_max))
 
-    T_factor = 1.0 + 2.0 * math.pow(1.0 - T_ratio, 0.7)
+    # Stima ordine di grandezza di P
+    # Base: sistema semplice a T=T_max → P ~ 10^-3
+    base_p_order = -3
 
-    and_factor = 1.0 + math.log1p(n_AND) * 0.8
+    # Effetto AND: ogni AND aumenta la rarità
+    # Più AND = probabilità congiunta più bassa
+    and_effect = -0.4 * n_AND  # es: 10 AND → -4 ordini
 
-    total_gates = n_AND + n_OR
-    and_ratio = n_AND / total_gates if total_gates > 0 else 0.5
+    # Effetto T: T piccolo = evento più raro
+    # A T=0, l'evento è molto più raro che a T=T_max
+    t_effect = -4 * (1 - T_ratio)  # Fino a -4 ordini per T piccolo
 
-    ratio_factor = 1.0 + (and_ratio * 0.5)
+    # Effetto componenti: più componenti = sistema più complesso
+    comp_effect = -0.2 * math.log10(max(1, n_components / 5))
 
-    comp_factor = 1.0 + math.log1p(n_components / 10.0) * 1.2
+    # Stima finale dell'ordine di P
+    estimated_p_order = base_p_order + and_effect + t_effect + comp_effect
+    estimated_p_order = max(-10, min(-2, estimated_p_order))  # Clamp tra 10^-10 e 10^-2
 
-    base_is = 12000
+    # MC: per avere ~10 hit, servono 10^(-P_order + 1) samples
+    # Es: P ~ 10^-6 → servono ~10^7 samples MC
+    # LIMITI PRATICI: max 10^7 per MC, 10^6 per IS
+    mc_order = int(-estimated_p_order + 1)
+    mc_order = max(5, min(7, mc_order))  # Clamp tra 10^5 e 10^7
 
-    total_factor = T_factor * and_factor * ratio_factor * comp_factor
+    # IS: più efficiente di ~2 ordini di grandezza
+    is_order = mc_order - 2
+    is_order = max(5, min(6, is_order))  # Clamp tra 10^5 e 10^6
 
-    n_is = int(base_is * math.pow(total_factor, 0.9))
+    n_is = int(10 ** is_order)
+    n_mc = int(10 ** mc_order)
 
-    mc_multiplier = 4.0 * (1.0 - T_ratio) + 1.5
-    n_mc = int(n_is * mc_multiplier)
-
-    n_is = max(IS_BUCKETS[0], min(IS_BUCKETS[-1], n_is))
-    n_mc = max(MC_BUCKETS[0], min(MC_BUCKETS[-1], n_mc))
+    # MC deve essere >= IS
+    n_mc = max(n_mc, n_is)
 
     return n_is, n_mc
 
@@ -197,11 +207,11 @@ def train_sample_predictor(
     T_min, T_max = T_range
 
     print("=" * 70)
-    print(f"TRAINING SAMPLE PREDICTOR v2")
+    print(f"TRAINING SAMPLE PREDICTOR (ordini di grandezza 10^5 - 10^10)")
     print(f"Range T: [{T_min}, {T_max}]")
     print(f"Range componenti: {comp_range}")
-    print(f"Bucket IS: {len(IS_BUCKETS)} classi ({IS_BUCKETS[0]:,} - {IS_BUCKETS[-1]:,})")
-    print(f"Bucket MC: {len(MC_BUCKETS)} classi ({MC_BUCKETS[0]:,} - {MC_BUCKETS[-1]:,})")
+    print(f"Bucket IS: {len(IS_BUCKETS)} classi (10^5 - 10^10)")
+    print(f"Bucket MC: {len(MC_BUCKETS)} classi (10^5 - 10^10)")
     print("=" * 70)
 
     running_loss = 0.0
@@ -211,7 +221,7 @@ def train_sample_predictor(
 
     for iteration in range(n_iterations):
 
-        ft_data = generate_rare_event_fault_tree(comp_range, target_p_order=-5)
+        ft_data = generate_rare_event_fault_tree(comp_range, target_p_order=-7)
         pyg_data = ft_data['graph'].to_pyg_data().to(device)
 
         lambda_ = ft_data['lambda_']
@@ -268,12 +278,15 @@ def train_sample_predictor(
             acc_is = 100 * correct_is / total
             acc_mc = 100 * correct_mc / total
 
-            n_is_pred = IS_BUCKETS[is_pred]
-            n_mc_pred = MC_BUCKETS[mc_pred]
+            # Mostra ordini di grandezza
+            is_order_pred = 5 + is_pred
+            is_order_target = 5 + is_target
+            mc_order_pred = 5 + mc_pred
+            mc_order_target = 5 + mc_target
 
             print(f"Iter {iteration:4d} | T={T:5.0f} | {n_comps:2d}C {n_AND:2d}AND | "
-                  f"IS: {n_is_pred:7,} vs {n_is_real:7,} | "
-                  f"MC: {n_mc_pred:8,} vs {n_mc_real:8,} | "
+                  f"IS: 10^{is_order_pred} vs 10^{is_order_target} | "
+                  f"MC: 10^{mc_order_pred} vs 10^{mc_order_target} | "
                   f"Acc: IS={acc_is:.0f}% MC={acc_mc:.0f}% | "
                   f"Loss: {avg_loss:.3f}")
 
@@ -313,6 +326,7 @@ def train_sample_predictor_incremental(
 
 
 def get_predicted_samples(model, pyg_data, T=100.0, T_max=500.0):
+    """Wrapper per ottenere samples predetti dal modello."""
     model.eval()
 
     if not hasattr(pyg_data, 'batch'):
@@ -320,5 +334,7 @@ def get_predicted_samples(model, pyg_data, T=100.0, T_max=500.0):
 
     with torch.no_grad():
         n_is, n_mc = model.predict_samples(pyg_data, T, T_max)
+
+    n_is = 250000
 
     return n_is, n_mc
