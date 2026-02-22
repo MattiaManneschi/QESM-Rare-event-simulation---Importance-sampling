@@ -165,6 +165,9 @@ def compute_component_criticality(graph):
     return criticality
 
 
+import numpy as np
+
+
 def simulate_CTMC_simple(lambda_, mu_, alpha, beta, T, fault_tree):
     comps = list(lambda_.keys())
     state = {c: 0 for c in comps}
@@ -263,8 +266,9 @@ class DirectPredictor(nn.Module):
             nn.Linear(32, 1)
         )
 
+        # === MODIFICA: std per beta più ampio (simmetrico con alpha) ===
         self.log_std_alpha = nn.Parameter(torch.ones(1) * 0.7)
-        self.log_std_beta = nn.Parameter(torch.zeros(1))
+        self.log_std_beta = nn.Parameter(torch.ones(1) * 0.7)  # ERA: torch.zeros(1)
 
     def forward(self, data, T, T_max=500.0, sample=False):
         x, edge_index = data.x, data.edge_index
@@ -294,16 +298,19 @@ class DirectPredictor(nn.Module):
         alpha_raw = self.alpha_head(node_features).squeeze(-1)
         beta_raw = self.beta_head(node_features).squeeze(-1)
 
+        # === MODIFICA: beta simmetrico ad alpha ===
+        # Alpha: base alta, poi decay con T
         alpha_base = 1.0 + F.softplus(alpha_raw) * 15.0
-
-        beta_mean = 1.0 + F.softplus(beta_raw) * 0.5
-
         alpha_mean = 1.0 + (alpha_base - 1.0) * time_decay
 
-        if sample:
+        # Beta: STESSO comportamento di alpha (era: 1.0 + softplus * 0.5, senza decay)
+        beta_base = 1.0 + F.softplus(beta_raw) * 15.0
+        beta_mean = 1.0 + (beta_base - 1.0) * time_decay
 
+        if sample:
             std_alpha = (torch.exp(self.log_std_alpha) * (1.0 + alpha_mean * 0.1)).clamp(0.01, 30.0)
-            std_beta = torch.exp(self.log_std_beta).clamp(0.01, 0.5)
+            # === MODIFICA: std_beta proporzionale come alpha ===
+            std_beta = (torch.exp(self.log_std_beta) * (1.0 + beta_mean * 0.1)).clamp(0.01, 30.0)  # ERA: clamp(0.01, 0.5)
 
             dist_alpha = torch.distributions.Normal(alpha_mean, std_alpha)
             dist_beta = torch.distributions.Normal(beta_mean, std_beta)
@@ -334,6 +341,20 @@ class DirectPredictor(nn.Module):
 
 
 def compute_target_alpha_beta(graph, T, T_max):
+    """
+    Calcola i target per alpha e beta.
+    
+    === MODIFICA PRINCIPALE ===
+    Beta ora ha lo STESSO comportamento di alpha:
+    - Alto per T piccolo (evento raro)
+    - Tende a 1 per T grande (evento meno raro)
+    
+    Questo perché:
+    - α alto → guasti più frequenti (λ_is = λ × α)
+    - β alto → riparazioni più lente (μ_is = μ / β)
+    
+    Entrambi aumentano P(top event), quindi devono comportarsi allo stesso modo.
+    """
     criticality = compute_component_criticality(graph)
     depths = graph.get_min_distance_to_top_event()
 
@@ -341,10 +362,12 @@ def compute_target_alpha_beta(graph, T, T_max):
     n_and = sum(1 for n in graph.nodes if n.get('type') == 'AND')
 
     T_normalized = T / T_max
-
     time_decay = (1.0 - T_normalized) ** 1.5
 
-    base_alpha = 5.0 + n_and * 2.0
+    # === MODIFICA: base_alpha più conservativo ===
+    # ERA: base_alpha = 5.0 + n_and * 2.0  (con 13 AND → 31!)
+    # ORA: scala più dolce, con cap
+    base_alpha = 3.0 + min(n_and, 10) * 1.0  # Max ~13 invece di 31
 
     target_alpha = {}
     target_beta = {}
@@ -355,18 +378,21 @@ def compute_target_alpha_beta(graph, T, T_max):
 
         depth_factor = 0.8 + (d * 0.2)
 
+        # Alpha target (come prima, ma con base più basso)
         alpha_base = base_alpha * crit * depth_factor
         alpha_val = 1.0 + alpha_base * time_decay
+        target_alpha[name] = np.clip(alpha_val, 1.0, 20.0)  # ERA: 250.0
 
-        target_alpha[name] = np.clip(alpha_val, 1.0, 250.0)
-
-        target_beta[name] = 1.0 + (0.5 * crit * time_decay)
-        target_beta[name] = max(1.0, target_beta[name])
+        # === MODIFICA: Beta target SIMMETRICO ad alpha ===
+        # ERA: target_beta[name] = 1.0 + (0.5 * crit * time_decay)  # Max ~1.5
+        # ORA: stessa formula di alpha
+        beta_base = base_alpha * crit * depth_factor
+        beta_val = 1.0 + beta_base * time_decay
+        target_beta[name] = np.clip(beta_val, 1.0, 20.0)
 
     return target_alpha, target_beta
 
 
-import numpy as np
 import math
 
 
@@ -433,7 +459,7 @@ def train_direct_predictor_hybrid(
     n_simulations_rl=2000,
     verbose=True
 ):
-    from src.fault_tree_generator import generate_rare_event_fault_tree
+    from fault_tree_generator import generate_rare_event_fault_tree
 
     if pretrained_model is not None:
         model = pretrained_model.to(device)
@@ -531,6 +557,8 @@ def train_direct_predictor_hybrid(
         alpha_dict = {name: alpha_all[idx].item() for name, idx in zip(component_names, component_indices)}
         beta_dict = {name: beta_all[idx].item() for name, idx in zip(component_names, component_indices)}
 
+        target_alpha, _ = compute_target_alpha_beta(graph, T, T_max)
+        
         reward, cv, top_rate = compute_reward(
             alpha_dict, beta_dict, target_alpha, graph, fault_tree, T,
             n_simulations=n_simulations_rl

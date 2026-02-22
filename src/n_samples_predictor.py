@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch_geometric.nn import GCNConv, global_mean_pool
 
-from src.fault_tree_generator import generate_rare_event_fault_tree
+from fault_tree_generator import generate_rare_event_fault_tree
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
