@@ -1,7 +1,7 @@
 import math
 import random
 
-from src.direct_predictor import FaultTreeGraph
+from direct_predictor import FaultTreeGraph
 
 
 def generate_rare_event_fault_tree(
@@ -9,9 +9,31 @@ def generate_rare_event_fault_tree(
         lambda_range=(1e-4, 5e-4),
         mu_range=(0.1, 0.5),
         target_p_order=-5,
-        structure_type='auto'
+        structure_type='auto',
+        max_and_fraction=0.4,
 ):
-    max_retries = 20
+    """
+    Genera un fault tree con numero di componenti estratto da
+    *n_components_range* e P stimata vicina a 10^target_p_order.
+
+    Parameters
+    ----------
+    n_components_range : tuple (min, max)
+        Range per il numero di componenti (estremi inclusi).
+    lambda_range : tuple
+        Range base per i tassi di guasto.
+    mu_range : tuple
+        Range per i tassi di riparazione.
+    target_p_order : int | float
+        Ordine di grandezza target della probabilità (es. -5 → ~1e-5).
+    structure_type : str
+        'auto' sceglie automaticamente; oppure
+        'series_and', 'deep_series', 'mixed', 'hierarchical'.
+    max_and_fraction : float
+        Frazione massima di porte AND su (AND+OR).  Default 0.4 (40 %).
+        Evita alberi troppo AND-heavy che causano alta varianza IS.
+    """
+    max_retries = 50
     best_ft = None
     min_error = float('inf')
 
@@ -20,29 +42,43 @@ def generate_rare_event_fault_tree(
         adj_lambda_min *= 5
         adj_lambda_max *= 5
 
+    # Probabilità AND nelle sotto-strutture, coerente con max_and_fraction
+    and_prob = max(0.1, min(0.5, max_and_fraction))
+
     for attempt in range(max_retries):
         n_components = random.randint(*n_components_range)
 
         if structure_type == 'auto':
             if target_p_order >= -3:
                 st = random.choice(['mixed', 'hierarchical'])
-                heavy_and = False
             else:
                 st = random.choice(['series_and', 'deep_series', 'mixed'])
-                heavy_and = (target_p_order < -6)
         else:
             st = structure_type
-            heavy_and = (target_p_order < -6)
 
         if st == 'series_and':
-            ft_data = _generate_series_and_tree(n_components, (adj_lambda_min, adj_lambda_max), mu_range)
+            ft_data = _generate_series_and_tree(
+                n_components, (adj_lambda_min, adj_lambda_max), mu_range,
+                and_prob=and_prob)
         elif st == 'deep_series':
-            ft_data = _generate_deep_series_tree(n_components, (adj_lambda_min, adj_lambda_max), mu_range,
-                                                 heavy_and=heavy_and)
+            ft_data = _generate_deep_series_tree(
+                n_components, (adj_lambda_min, adj_lambda_max), mu_range,
+                and_prob=and_prob)
         elif st == 'mixed':
-            ft_data = _generate_mixed_tree(n_components, (adj_lambda_min, adj_lambda_max), mu_range)
+            ft_data = _generate_mixed_tree(
+                n_components, (adj_lambda_min, adj_lambda_max), mu_range,
+                and_prob=and_prob)
         else:
-            ft_data = _generate_hierarchical_tree(n_components, (adj_lambda_min, adj_lambda_max), mu_range)
+            ft_data = _generate_hierarchical_tree(
+                n_components, (adj_lambda_min, adj_lambda_max), mu_range,
+                and_prob=and_prob)
+
+        # --- Verifica AND fraction ---
+        n_and = sum(1 for n in ft_data['graph'].nodes if n.get('type') == 'AND')
+        n_or  = sum(1 for n in ft_data['graph'].nodes if n.get('type') == 'OR')
+        n_gates = n_and + n_or
+        if n_gates > 0 and n_and / n_gates > max_and_fraction + 0.05:
+            continue
 
         log_p = _estimate_tree_log_prob(ft_data['graph'])
         error = abs(log_p - target_p_order)
@@ -102,7 +138,7 @@ def _estimate_tree_log_prob(graph):
         return -100.0
 
 
-def _generate_series_and_tree(n_components, lambda_range, mu_range):
+def _generate_series_and_tree(n_components, lambda_range, mu_range, and_prob=0.4):
     graph = FaultTreeGraph()
 
     n_subsystems = random.randint(2, max(3, n_components // 2))
@@ -127,7 +163,7 @@ def _generate_series_and_tree(n_components, lambda_range, mu_range):
 
         if not ss_components: continue
 
-        if random.random() < 0.6: 
+        if random.random() >= and_prob:
             gate = graph.add_gate('OR', ss_components)
         else:
             gate = graph.add_gate('AND', ss_components)
@@ -142,7 +178,7 @@ def _generate_series_and_tree(n_components, lambda_range, mu_range):
     return _finalize_tree(graph)
 
 
-def _generate_hierarchical_tree(n_components, lambda_range, mu_range):
+def _generate_hierarchical_tree(n_components, lambda_range, mu_range, and_prob=0.4):
     graph = FaultTreeGraph()
     n_or_branches = random.randint(2, 4)
     comp_idx = 0
@@ -190,7 +226,7 @@ def _generate_hierarchical_tree(n_components, lambda_range, mu_range):
     return _finalize_tree(graph)
 
 
-def _generate_mixed_tree(n_components, lambda_range, mu_range):
+def _generate_mixed_tree(n_components, lambda_range, mu_range, and_prob=0.4):
     graph = FaultTreeGraph()
     component_indices = []
     
@@ -216,7 +252,7 @@ def _generate_mixed_tree(n_components, lambda_range, mu_range):
         i += group_size
 
         if len(group) >= 2:
-            gtype = 'AND' if random.random() < 0.4 else 'OR'
+            gtype = 'AND' if random.random() < and_prob else 'OR'
             level1.append(graph.add_gate(gtype, group))
         else:
             level1.extend(group)
@@ -235,8 +271,7 @@ def _generate_mixed_tree(n_components, lambda_range, mu_range):
         i += group_size
 
         if len(group) >= 2:
-
-            gtype = 'OR' if random.random() < 0.7 else 'AND'
+            gtype = 'OR' if random.random() < (1.0 - and_prob) else 'AND'
             level2.append(graph.add_gate(gtype, group))
         else:
             level2.extend(group)
@@ -249,7 +284,7 @@ def _generate_mixed_tree(n_components, lambda_range, mu_range):
     return _finalize_tree(graph)
 
 
-def _generate_deep_series_tree(n_components, lambda_range, mu_range, heavy_and=False):
+def _generate_deep_series_tree(n_components, lambda_range, mu_range, and_prob=0.4):
     graph = FaultTreeGraph()
     component_indices = []
     for i in range(n_components):
@@ -261,7 +296,7 @@ def _generate_deep_series_tree(n_components, lambda_range, mu_range, heavy_and=F
     random.shuffle(component_indices)
     current_level = component_indices
 
-    prob_and = 0.7 if heavy_and else 0.2
+    prob_and = and_prob
 
     while len(current_level) > 1:
         next_level = []
