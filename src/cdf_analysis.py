@@ -34,6 +34,10 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # SMC Helper Functions
 # =============================================================================
 
+# Parametro globale per Defensive Mixture
+DEFENSIVE_MIX_RATIO = 0.8
+
+
 def _simulate_ctmc_step(
     state: Dict[str, int],
     lambda_: Dict[str, float],
@@ -43,71 +47,93 @@ def _simulate_ctmc_step(
     t_start: float,
     t_end: float,
     fault_tree: Callable,
-    max_transitions: int = 500
+    max_transitions: int = 500,
+    defensive_mix: float = DEFENSIVE_MIX_RATIO
 ) -> Tuple[Dict[str, int], float, bool, float]:
     """
-    Simula un singolo step temporale del CTMC con IS.
+    Simula un singolo step temporale del CTMC con IS + Defensive Mixture.
+
+    Defensive Mixture: mescola la proposta IS con la distribuzione originale.
+    Questo evita pesi estremi mantenendo la stima unbiased.
+
+    rate_proposal = mix * rate_is + (1-mix) * rate_orig
     """
     comps = list(lambda_.keys())
     state = dict(state)
-    
+
     t = t_start
     log_w = 0.0
     top_event_hit = False
     n_transitions = 0
-    
+
+    mix = defensive_mix  # 0.9 = 90% IS, 10% originale
+
     while t < t_end and n_transitions < max_transitions:
         rates_orig = {}
         rates_is = {}
-        
+        rates_proposal = {}  # Defensive mixture
+
         for c in comps:
             if state[c] == 0:
-                rates_orig[('fail', c)] = lambda_[c]
-                rates_is[('fail', c)] = lambda_[c] * alpha[c]
+                r_orig = lambda_[c]
+                r_is = lambda_[c] * alpha[c]
+                rates_orig[('fail', c)] = r_orig
+                rates_is[('fail', c)] = r_is
+                # Defensive mixture: blend IS con originale
+                rates_proposal[('fail', c)] = mix * r_is + (1 - mix) * r_orig
             else:
-                rates_orig[('repair', c)] = mu_[c]
-                rates_is[('repair', c)] = mu_[c] / beta[c]
-        
+                r_orig = mu_[c]
+                r_is = mu_[c] / beta[c]
+                rates_orig[('repair', c)] = r_orig
+                rates_is[('repair', c)] = r_is
+                # Defensive mixture: blend IS con originale
+                rates_proposal[('repair', c)] = mix * r_is + (1 - mix) * r_orig
+
         R_orig = sum(rates_orig.values())
-        R_is = sum(rates_is.values())
-        
-        if R_is <= 0:
+        R_proposal = sum(rates_proposal.values())
+
+        if R_proposal <= 0:
             break
-        
-        dt = np.random.exponential(1.0 / R_is)
-        
+
+        # Campiona usando la proposta (defensive mixture)
+        dt = np.random.exponential(1.0 / R_proposal)
+
         if t + dt > t_end:
             remaining = t_end - t
-            log_w += (R_is - R_orig) * remaining
+            # Peso per il tempo rimanente: exp((R_proposal - R_orig) * remaining)
+            log_w += (R_proposal - R_orig) * remaining
             t = t_end
             break
-        
+
         t += dt
-        log_w += (R_is - R_orig) * dt + np.log(R_orig / R_is)
-        
-        r = np.random.random() * R_is
+        # Peso per il tempo: contributo dalla differenza di rate totali
+        log_w += (R_proposal - R_orig) * dt + np.log(R_orig / R_proposal)
+
+        # Scegli evento dalla proposta
+        r = np.random.random() * R_proposal
         cumsum = 0.0
         chosen_event = None
-        for event, rate in rates_is.items():
+        for event, rate in rates_proposal.items():
             cumsum += rate
             if r <= cumsum:
                 chosen_event = event
                 break
-        
+
         if chosen_event is None:
             break
-        
-        log_w += np.log(rates_orig[chosen_event] / rates_is[chosen_event]) + np.log(R_is / R_orig)
-        
+
+        # Peso per la scelta dell'evento
+        log_w += np.log(rates_orig[chosen_event] / rates_proposal[chosen_event]) + np.log(R_proposal / R_orig)
+
         event_type, comp = chosen_event
         state[comp] = 1 if event_type == 'fail' else 0
-        
+
         if fault_tree(state):
             top_event_hit = True
             break
-        
+
         n_transitions += 1
-    
+
     return state, log_w, top_event_hit, t
 
 
@@ -121,14 +147,14 @@ def _systematic_resample(
     Systematic resampling: duplica particelle con pesi alti, elimina quelle con pesi bassi.
     """
     n = len(particles)
-    
+
     max_log_w = max(log_weights)
     weights = np.array([math.exp(lw - max_log_w) for lw in log_weights])
     weights /= weights.sum()
-    
+
     positions = (np.arange(n) + np.random.random()) / n
     cumsum = np.cumsum(weights)
-    
+
     indices = []
     i, j = 0, 0
     while i < n:
@@ -139,12 +165,12 @@ def _systematic_resample(
             j += 1
             if j >= n:
                 j = n - 1
-    
+
     new_particles = [dict(particles[i]) for i in indices]
     new_top_hits = [top_hits[i] for i in indices]
     new_hit_times = [hit_times[i] for i in indices]
     new_log_weights = [0.0] * n
-    
+
     return new_particles, new_log_weights, new_top_hits, new_hit_times
 
 
@@ -154,10 +180,10 @@ def _effective_sample_size(log_weights: List[float]) -> float:
         return 0.0
     max_log_w = max(log_weights)
     weights = np.array([math.exp(lw - max_log_w) for lw in log_weights])
-    
+
     if weights.sum() == 0:
         return 0.0
-    
+
     weights_normalized = weights / weights.sum()
     ess = 1.0 / np.sum(weights_normalized ** 2)
     return ess
@@ -167,11 +193,11 @@ def _clip_weights(weights: np.ndarray, percentile: float = 95) -> Tuple[np.ndarr
     """Weight clipping: taglia i pesi sopra un percentile."""
     if len(weights) == 0:
         return weights, 0.0
-    
+
     threshold = np.percentile(weights, percentile)
     n_clipped = np.sum(weights > threshold)
     clip_ratio = n_clipped / len(weights)
-    
+
     clipped = np.minimum(weights, threshold)
     return clipped, clip_ratio
 
@@ -195,7 +221,7 @@ def compute_cdf_point(
 ) -> Dict:
     """
     Calcola un punto della CDF usando SMC IS con weight clipping + MC standard.
-    
+
     Args:
         lambda_, mu_: Rates originali
         alpha, beta: Parametri IS (da CE)
@@ -209,71 +235,71 @@ def compute_cdf_point(
     """
     comps = list(lambda_.keys())
     dt = T / n_steps
-    
+
     # === SMC IS ===
     particles = [{c: 0 for c in comps} for _ in range(n_is)]
     log_weights = [0.0] * n_is
     top_hits = [False] * n_is
     hit_times = [T] * n_is
-    
+
     log_normalization = 0.0
     n_resamples = 0
     ess_final = 0.0
-    
+
     for step in range(n_steps):
         t_start = step * dt
         t_end = (step + 1) * dt
-        
+
         n_particles = len(particles)
         for i in range(n_particles):
             if top_hits[i]:
                 continue
-            
+
             new_state, log_w, hit, t_final = _simulate_ctmc_step(
                 particles[i], lambda_, mu_, alpha, beta,
                 t_start, t_end, fault_tree_logic
             )
-            
+
             particles[i] = new_state
             log_weights[i] += log_w
-            
+
             if hit:
                 top_hits[i] = True
                 hit_times[i] = t_final
-        
+
         # Calcola ESS sulle particelle attive
         n_particles = len(particles)
         active_indices = [i for i in range(n_particles) if not top_hits[i]]
-        
+
         if len(active_indices) > 0:
             active_log_weights = [log_weights[i] for i in active_indices]
             ess = _effective_sample_size(active_log_weights)
             ess_ratio = ess / len(active_indices)
         else:
             ess_ratio = 1.0
-        
+
         # Resample se ESS basso - SOLO sulle particelle attive (non quelle con hit)
         if ess_ratio < ess_threshold and len(active_indices) > 10:
             # Salva particelle con hit (non partecipano al resampling)
-            hit_particles = [(i, particles[i], log_weights[i], hit_times[i]) 
+            hit_particles = [(i, particles[i], log_weights[i], hit_times[i])
                              for i in range(n_particles) if top_hits[i]]
-            
+
             # Resampling solo sulle particelle attive
             active_particles = [particles[i] for i in active_indices]
             active_log_weights = [log_weights[i] for i in active_indices]
-            
+
             # Calcola normalizzazione solo sulle attive
             max_log_w = max(active_log_weights) if active_log_weights else 0.0
             weights_active = np.array([math.exp(lw - max_log_w) for lw in active_log_weights])
             log_normalization += max_log_w + np.log(weights_active.mean())
-            
+
             # Resample attive
             n_active = len(active_indices)
             weights_active_norm = weights_active / weights_active.sum()
-            
+
             positions = (np.arange(n_active) + np.random.random()) / n_active
             cumsum = np.cumsum(weights_active_norm)
-            
+
             new_active_indices = []
             i, j = 0, 0
             while i < n_active:
@@ -284,33 +310,33 @@ def compute_cdf_point(
                     j += 1
                     if j >= n_active:
                         j = n_active - 1
-            
+
             # Ricostruisci array: prima le hit (preservate), poi le resample attive
             new_particles = []
             new_log_weights = []
             new_top_hits = []
             new_hit_times = []
-            
+
             # Aggiungi particelle con hit (preservate intatte)
             for _, p, lw, ht in hit_particles:
                 new_particles.append(p)
                 new_log_weights.append(lw)  # Mantieni peso originale
                 new_top_hits.append(True)
                 new_hit_times.append(ht)
-            
+
             # Aggiungi particelle attive resample
             for idx in new_active_indices:
                 new_particles.append(dict(active_particles[idx]))
                 new_log_weights.append(0.0)  # Reset peso dopo resampling
                 new_top_hits.append(False)
                 new_hit_times.append(T)
-            
+
             particles = new_particles
             log_weights = new_log_weights
             top_hits = new_top_hits
             hit_times = new_hit_times
             n_resamples += 1
-    
+
     # Calcola stima finale
     n_particles_final = len(particles)
     valid_weights = []
@@ -323,29 +349,29 @@ def compute_cdf_point(
                 valid_weights.append(0.0)
         else:
             valid_weights.append(0.0)
-    
+
     valid_weights = np.array(valid_weights)
     n_top_is = sum(top_hits)
-    
+
     # Inizializza risultati
     p_is = 0.0
     cv_is = float('inf')
     ess_final = 0.0
     ess_ratio_final = 0.0
-    
+
     if n_top_is > 0:
         top_weights = valid_weights[valid_weights > 0]
-        
+
         # Calcola ESS sui top weights
         if len(top_weights) > 1:
             weights_norm = top_weights / top_weights.sum()
             ess_final = 1.0 / np.sum(weights_norm ** 2)
             ess_ratio_final = ess_final / len(top_weights)
-        
+
         # Weight Clipping
         if len(top_weights) > 1:
             top_weights_clipped, clip_ratio = _clip_weights(top_weights, clip_percentile)
-            
+
             # Ricostruisci array con pesi clippati
             clipped_weights = valid_weights.copy()
             top_idx = 0
@@ -353,9 +379,9 @@ def compute_cdf_point(
                 if clipped_weights[i] > 0:
                     clipped_weights[i] = top_weights_clipped[top_idx]
                     top_idx += 1
-            
+
             p_is = clipped_weights.mean() * math.exp(log_normalization)
-            
+
             if np.mean(top_weights_clipped) > 0:
                 cv_is = np.std(top_weights_clipped) / np.mean(top_weights_clipped)
             else:
@@ -363,13 +389,13 @@ def compute_cdf_point(
         else:
             p_is = valid_weights.mean() * math.exp(log_normalization)
             cv_is = 1.0
-    
+
     # Calcola std IS
     if n_top_is > 1 and p_is > 0 and cv_is != float('inf'):
         std_is = p_is * cv_is / math.sqrt(n_top_is)
     else:
         std_is = p_is if p_is > 0 else 0.0
-    
+
     # === MC standard ===
     alpha_mc = {c: 1.0 for c in comps}
     beta_mc = {c: 1.0 for c in comps}
@@ -426,11 +452,12 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
 
     if verbose:
         print("=" * 100)
-        print("CALCOLO CURVA CDF (DirectPredictor + Adaptive IS + SMC + Weight Clipping)")
+        print("CALCOLO CURVA CDF (DirectPredictor + Adaptive IS + SMC + Weight Clipping + Defensive Mixture)")
         print(f"T: [{t_step}, {t_max}], step={t_step}, punti={len(t_values)}")
         print(f"Componenti: {n_comps}, AND: {n_and}, OR: {n_or}")
         print(f"CE: {ce_iterations} iter, {ce_samples} samples/iter")
         print(f"SMC: {smc_steps} steps, ESS threshold={ess_threshold:.0%}, clip={clip_percentile}%")
+        print(f"Defensive Mixture: {DEFENSIVE_MIX_RATIO:.0%} IS + {1-DEFENSIVE_MIX_RATIO:.0%} originale")
         print("=" * 100)
 
     pyg_data = ft.to_pyg_data().to(device)
@@ -464,7 +491,7 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
             alpha_init, beta_init,
             n_iterations=ce_iterations,
             n_samples_per_iter=ce_samples,
-            elite_fraction=0.1,
+            elite_fraction=0.05,
             smoothing=0.6,
             verbose=False
         )
@@ -657,7 +684,7 @@ def plot_cv(results, topology_name="FaultTree", save_path=None):
 def run_cdf_analysis(ft, fault_tree_logic, direct_model, topology_name="FaultTree",
                      t_max=500, t_step=10, sample_model=None,
                      ce_iterations=5, ce_samples=3000,
-                     smc_steps=10, ess_threshold=0.5, clip_percentile=95):
+                     smc_steps=20, ess_threshold=0.5, clip_percentile=90):
     """
     Esegue l'analisi CDF completa con Adaptive IS + SMC + Weight Clipping.
 
