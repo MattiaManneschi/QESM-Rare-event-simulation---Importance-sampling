@@ -19,6 +19,7 @@ import os
 import math
 import torch
 from typing import Dict, List, Tuple, Callable
+from statistics import NormalDist
 
 from direct_predictor import simulate_CTMC_simple
 from n_samples_predictor import get_predicted_samples
@@ -28,6 +29,24 @@ PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULTS_DIR = os.path.join(PROJECT_DIR, 'results')
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def _pointwise_confidence_interval(p_hat: np.ndarray, std_hat: np.ndarray,
+                                   confidence: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
+    """Pointwise normal-approximation confidence interval for each CDF estimate."""
+    z = NormalDist().inv_cdf(0.5 + confidence / 2.0)
+    half_width = z * std_hat
+    lower = np.clip(p_hat - half_width, 0.0, 1.0)
+    upper = np.clip(p_hat + half_width, 0.0, 1.0)
+    return lower, upper
+
+
+def _dkw_confidence_band(n_samples: np.ndarray, confidence: float = 0.95) -> np.ndarray:
+    """DKW simultaneous band width for each time point."""
+    alpha = 1.0 - confidence
+    n_samples = np.asarray(n_samples, dtype=float)
+    epsilon = np.sqrt(np.log(2.0 / alpha) / (2.0 * np.maximum(n_samples, 1.0)))
+    return epsilon
 
 
 # =============================================================================
@@ -419,6 +438,8 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
         'ess': [], 'ess_ratio': [],
         'alphas': {c: [] for c in comps},
         'betas': {c: [] for c in comps},
+        'pointwise_lower': [], 'pointwise_upper': [],
+        'dkw_lower': [], 'dkw_upper': [],
     }
 
     n_and = sum(1 for n in ft.nodes if n.get('type') == 'AND')
@@ -447,7 +468,7 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
         # Step 2: Determina numero samples
         if sample_model is not None:
             sample_model.to(device)
-            n_is, n_mc = get_predicted_samples(sample_model, pyg_data, T=t, T_max=float(t_max))
+            n_is, n_mc = get_predicted_samples(sample_model, pyg_data, T=float(t), T_max=float(t_max))
         else:
             t_factor = max(1.0, 2.5 * (1.0 - t / t_max))
             and_factor = 1.0 + n_and * 0.1
@@ -471,7 +492,7 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
 
         # Step 4: Calcola punto CDF con SMC + weight clipping
         cdf_point = compute_cdf_point(
-            lambda_, mu_, alpha_opt, beta_opt, t, fault_tree_logic,
+            lambda_, mu_, alpha_opt, beta_opt, float(t), fault_tree_logic,
             n_is=n_is, n_mc=n_mc,
             n_steps=smc_steps,
             ess_threshold=ess_threshold,
@@ -492,6 +513,17 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
         results['n_top_mc'].append(cdf_point['n_top_mc'])
         results['ess'].append(cdf_point['ess'])
         results['ess_ratio'].append(cdf_point['ess_ratio'])
+
+        p_mc = cdf_point['p_mc']
+        std_mc = cdf_point['std_mc']
+        pointwise_lower, pointwise_upper = _pointwise_confidence_interval(
+            np.array([p_mc]), np.array([std_mc])
+        )
+        dkw_eps = _dkw_confidence_band(np.array([n_mc]))
+        results['pointwise_lower'].append(float(pointwise_lower[0]))
+        results['pointwise_upper'].append(float(pointwise_upper[0]))
+        results['dkw_lower'].append(float(np.clip(p_mc - dkw_eps[0], 0.0, 1.0)))
+        results['dkw_upper'].append(float(np.clip(p_mc + dkw_eps[0], 0.0, 1.0)))
 
         for c in comps:
             results['alphas'][c].append(alpha_opt[c])
@@ -533,6 +565,10 @@ def plot_cdf(results, topology_name="FaultTree", save_path=None):
     t = np.array(results['t'])
     p_is = np.array(results['p_is'])
     p_mc = np.array(results['p_mc'])
+    pointwise_lower = np.array(results.get('pointwise_lower', []))
+    pointwise_upper = np.array(results.get('pointwise_upper', []))
+    dkw_lower = np.array(results.get('dkw_lower', []))
+    dkw_upper = np.array(results.get('dkw_upper', []))
 
     p_is_mono = np.maximum.accumulate(p_is)
     p_mc_mono = np.maximum.accumulate(p_mc)
@@ -553,6 +589,16 @@ def plot_cdf(results, topology_name="FaultTree", save_path=None):
     ax2 = axes[1]
     p_mc_plot = np.where(p_mc_mono > 0, p_mc_mono, np.nan)
     p_mc_raw_plot = np.where(p_mc > 0, p_mc, np.nan)
+    if pointwise_lower.size == t.size and pointwise_upper.size == t.size:
+        pw_lower = np.clip(pointwise_lower, np.finfo(float).tiny, 1.0)
+        pw_upper = np.clip(pointwise_upper, np.finfo(float).tiny, 1.0)
+        ax2.fill_between(t, pw_lower, pw_upper, color='red', alpha=0.18,
+                         label='Pointwise 95% CI')
+    if dkw_lower.size == t.size and dkw_upper.size == t.size:
+        band_lower = np.clip(dkw_lower, np.finfo(float).tiny, 1.0)
+        band_upper = np.clip(dkw_upper, np.finfo(float).tiny, 1.0)
+        ax2.fill_between(t, band_lower, band_upper, color='orange', alpha=0.15,
+                         label='DKW 95% band')
     ax2.semilogy(t, p_mc_plot, 'r-', linewidth=2, label='MC - monotono')
     ax2.semilogy(t, p_mc_raw_plot, 'r--', linewidth=1, alpha=0.5, label='MC - raw')
     ax2.set_xlabel('Tempo t')
@@ -709,12 +755,16 @@ def run_cdf_analysis(ft, fault_tree_logic, direct_model, topology_name="FaultTre
         f.write(f"T_max: {t_max}, Step: {t_step}\n")
         f.write(f"Metodo: DirectPredictor + Adaptive IS + SMC + Weight Clipping\n")
         f.write(f"SMC steps: {smc_steps}, ESS threshold: {ess_threshold}, Clip: {clip_percentile}%\n")
+        f.write("Pointwise CI: normal approximation on MC estimates (95%)\n")
+        f.write("DKW band: simultaneous 95% band on MC estimates\n")
         f.write("=" * 100 + "\n\n")
 
-        f.write("t\tP_is\tP_mc\tstd_is\tstd_mc\tcv_is\tcv_mc\tn_top_is\tn_top_mc\tess\tess_ratio\n")
+        f.write("t\tP_is\tP_mc\tstd_is\tstd_mc\tcp_lo\tcp_hi\tdkw_lo\tdkw_hi\tcv_is\tcv_mc\tn_top_is\tn_top_mc\tess\tess_ratio\n")
         for i, t in enumerate(results['t']):
             f.write(f"{t:.1f}\t{results['p_is'][i]:.6e}\t{results['p_mc'][i]:.6e}\t"
                     f"{results['std_is'][i]:.6e}\t{results['std_mc'][i]:.6e}\t"
+                    f"{results['pointwise_lower'][i]:.6e}\t{results['pointwise_upper'][i]:.6e}\t"
+                    f"{results['dkw_lower'][i]:.6e}\t{results['dkw_upper'][i]:.6e}\t"
                     f"{results['cv_is'][i]:.4f}\t{results['cv_mc'][i]:.4f}\t"
                     f"{results['n_top_is'][i]}\t{results['n_top_mc'][i]}\t"
                     f"{results['ess'][i]:.2f}\t{results['ess_ratio'][i]:.4f}\n")

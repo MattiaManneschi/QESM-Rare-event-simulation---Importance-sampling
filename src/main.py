@@ -30,8 +30,12 @@ if __name__ == "__main__":
             n_iterations_per_stage=3000,
             T_range=(1, 500)
         )
-        torch.save(direct_model.state_dict(), DIRECT_MODEL_PATH)
-        print(f"[DirectPredictor] Salvato in {DIRECT_MODEL_PATH}")
+        if direct_model is not None:
+            torch.save(direct_model.state_dict(), DIRECT_MODEL_PATH)
+            print(f"[DirectPredictor] Salvato in {DIRECT_MODEL_PATH}")
+        else:
+            print("[ERROR] DirectPredictor training fallito.")
+            exit(1)
 
     if os.path.exists(SAMPLE_MODEL_PATH):
         sample_model = SamplePredictor().to(device)
@@ -44,14 +48,26 @@ if __name__ == "__main__":
             n_iterations_per_stage=3000,
             T_range=(1, 500)
         )
-        torch.save(sample_model.state_dict(), SAMPLE_MODEL_PATH)
-        print(f"[SamplePredictor] Salvato in {SAMPLE_MODEL_PATH}")
+        if sample_model is not None:
+            torch.save(sample_model.state_dict(), SAMPLE_MODEL_PATH)
+            print(f"[SamplePredictor] Salvato in {SAMPLE_MODEL_PATH}")
+        else:
+            print("[WARNING] SamplePredictor training fallito. Continuerò senza.")
+            sample_model = None
 
 
-    target_order = -9
+    target_order = -5
 
-    ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=target_order)
-    log_p = _estimate_tree_log_prob(ft_data['graph'])
+    ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=target_order)    
+    # Fallback se la generazione fallisce
+    if ft_data is None:
+        print(f"[FALLBACK] Generazione con target_order={target_order} fallita. Riprovo con target_order=-6...")
+        ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=target_order)
+    
+    if ft_data is None:
+        print("[ERROR] Generazione del fault tree completamente fallita. Uscita.")
+        exit(1)
+        log_p = _estimate_tree_log_prob(ft_data['graph'])
     print(f"DEBUG: target={target_order}, actual log_p={log_p:.1f}")
     results = run_cdf_analysis(
         ft_data['graph'],
@@ -59,7 +75,7 @@ if __name__ == "__main__":
         direct_model,
         topology_name=ft_data['structure'],
         t_max=250,
-        t_step=2,
+        t_step=10,
         sample_model=sample_model
     )
 
