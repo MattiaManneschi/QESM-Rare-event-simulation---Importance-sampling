@@ -335,6 +335,4 @@ def get_predicted_samples(model, pyg_data, T=100.0, T_max=500.0):
     with torch.no_grad():
         n_is, n_mc = model.predict_samples(pyg_data, T, T_max)
 
-    n_is = 250000
-
     return n_is, n_mc

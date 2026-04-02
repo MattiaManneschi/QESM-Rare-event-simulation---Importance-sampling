@@ -62,12 +62,13 @@ if __name__ == "__main__":
     # Fallback se la generazione fallisce
     if ft_data is None:
         print(f"[FALLBACK] Generazione con target_order={target_order} fallita. Riprovo con target_order=-6...")
-        ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=target_order)
+        ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=-6)
     
     if ft_data is None:
         print("[ERROR] Generazione del fault tree completamente fallita. Uscita.")
         exit(1)
-        log_p = _estimate_tree_log_prob(ft_data['graph'])
+    
+    log_p = _estimate_tree_log_prob(ft_data['graph'])
     print(f"DEBUG: target={target_order}, actual log_p={log_p:.1f}")
     results = run_cdf_analysis(
         ft_data['graph'],
