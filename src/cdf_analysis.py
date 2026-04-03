@@ -31,13 +31,23 @@ RESULTS_DIR = os.path.join(PROJECT_DIR, 'results')
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-def _pointwise_confidence_interval(p_hat: np.ndarray, std_hat: np.ndarray,
+def _pointwise_confidence_interval(p_hat: np.ndarray, std_hat: np.ndarray, 
+                                   n_samples: np.ndarray = None,
                                    confidence: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
-    """Pointwise normal-approximation confidence interval for each CDF estimate."""
+    """Wilson score confidence interval for binomial proportions (better for rare events)."""
     z = NormalDist().inv_cdf(0.5 + confidence / 2.0)
-    half_width = z * std_hat
-    lower = np.clip(p_hat - half_width, 0.0, 1.0)
-    upper = np.clip(p_hat + half_width, 0.0, 1.0)
+    
+    # Wilson score interval
+    z_sq = z * z
+    p = p_hat
+    n = np.asarray(n_samples, dtype=float)
+    
+    denominator = 1.0 + z_sq / n
+    center = (p + z_sq / (2.0 * n)) / denominator
+    margin = z * np.sqrt(p * (1.0 - p) / n + z_sq / (4.0 * n * n)) / denominator
+    
+    lower = np.clip(center - margin, 0.0, 1.0)
+    upper = np.clip(center + margin, 0.0, 1.0)
     return lower, upper
 
 
@@ -500,11 +510,11 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
             t_factor = max(1.0, 2.5 * (1.0 - t / t_max))
             and_factor = 1.0 + n_and * 0.1
             base_is = 30000
-            base_mc = 80000
+            base_mc = 10000000
             n_is = int(base_is * t_factor * and_factor)
             n_mc = int(base_mc * t_factor * and_factor)
             n_is = min(200000, max(20000, n_is))
-            n_mc = min(500000, max(50000, n_mc))
+            n_mc = min(10000000, max(50000, n_mc))
 
         # Step 3: Cross-Entropy per ottimizzare α, β
         alpha_opt, beta_opt, ce_stats = adaptive_is_cross_entropy(
@@ -544,9 +554,9 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
         p_mc = cdf_point['p_mc']
         std_mc = cdf_point['std_mc']
         pointwise_lower, pointwise_upper = _pointwise_confidence_interval(
-            np.array([p_mc]), np.array([std_mc])
+            np.array([p_mc]), np.array([std_mc]), np.array([n_mc])
         )
-        dkw_eps = _dkw_confidence_band(np.array([n_mc]))
+        dkw_eps = _dkw_confidence_band(np.array([n_mc]), confidence=0.95)
         results['pointwise_lower'].append(float(pointwise_lower[0]))
         results['pointwise_upper'].append(float(pointwise_upper[0]))
         results['dkw_lower'].append(float(np.clip(p_mc - dkw_eps[0], 0.0, 1.0)))
@@ -588,7 +598,7 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
 # =============================================================================
 
 def plot_cdf(results, topology_name="FaultTree", save_path=None):
-    """Plotta la curva CDF - 2 subplot: IS (log) e MC (log)."""
+    """Plotta la curva CDF - 2 subplot: IS e MC (scala lineare con DKW band)."""
     t = np.array(results['t'])
     p_is = np.array(results['p_is'])
     p_mc = np.array(results['p_mc'])
@@ -597,42 +607,36 @@ def plot_cdf(results, topology_name="FaultTree", save_path=None):
     dkw_lower = np.array(results.get('dkw_lower', []))
     dkw_upper = np.array(results.get('dkw_upper', []))
 
-    p_is_mono = np.maximum.accumulate(p_is)
-    p_mc_mono = np.maximum.accumulate(p_mc)
-
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     ax1 = axes[0]
-    p_is_plot = np.where(p_is_mono > 0, p_is_mono, np.nan)
-    p_is_raw_plot = np.where(p_is > 0, p_is, np.nan)
-    ax1.semilogy(t, p_is_plot, 'b-', linewidth=2, label='IS - monotono')
-    ax1.semilogy(t, p_is_raw_plot, 'b--', linewidth=1, alpha=0.5, label='IS - raw')
+    ax1.plot(t, p_is, 'b-', linewidth=2, label='IS')
     ax1.set_xlabel('Tempo t')
-    ax1.set_ylabel('P(T_fail ≤ t) [log]')
-    ax1.set_title(f'CDF IS (log scale) - {topology_name}')
+    ax1.set_ylabel('P(T_fail ≤ t)')
+    ax1.set_title(f'CDF IS - {topology_name}')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
     ax2 = axes[1]
-    p_mc_plot = np.where(p_mc_mono > 0, p_mc_mono, np.nan)
-    p_mc_raw_plot = np.where(p_mc > 0, p_mc, np.nan)
     if pointwise_lower.size == t.size and pointwise_upper.size == t.size:
-        pw_lower = np.clip(pointwise_lower, np.finfo(float).tiny, 1.0)
-        pw_upper = np.clip(pointwise_upper, np.finfo(float).tiny, 1.0)
-        ax2.fill_between(t, pw_lower, pw_upper, color='red', alpha=0.18,
-                         label='Pointwise 95% CI')
+        pw_lower = np.clip(pointwise_lower, 0.0, 1.0)
+        pw_upper = np.clip(pointwise_upper, 0.0, 1.0)
+        ax2.plot(t, pw_lower, color='red', linewidth=1, linestyle='--', alpha=0.6,
+                 label='Pointwise 95% CI')
+        ax2.plot(t, pw_upper, color='red', linewidth=1, linestyle='--', alpha=0.6)
     if dkw_lower.size == t.size and dkw_upper.size == t.size:
-        band_lower = np.clip(dkw_lower, np.finfo(float).tiny, 1.0)
-        band_upper = np.clip(dkw_upper, np.finfo(float).tiny, 1.0)
-        ax2.fill_between(t, band_lower, band_upper, color='orange', alpha=0.15,
-                         label='DKW 95% band')
-    ax2.semilogy(t, p_mc_plot, 'r-', linewidth=2, label='MC - monotono')
-    ax2.semilogy(t, p_mc_raw_plot, 'r--', linewidth=1, alpha=0.5, label='MC - raw')
+        band_lower = np.clip(dkw_lower, 0.0, 1.0)
+        band_upper = np.clip(dkw_upper, 0.0, 1.0)
+        ax2.plot(t, band_lower, color='orange', linewidth=1, linestyle='--', alpha=0.6,
+                 label='DKW 95% band')
+        ax2.plot(t, band_upper, color='orange', linewidth=1, linestyle='--', alpha=0.6)
+    ax2.plot(t, p_mc, 'r-', linewidth=2, label='MC')
     ax2.set_xlabel('Tempo t')
-    ax2.set_ylabel('P(T_fail ≤ t) [log]')
-    ax2.set_title(f'CDF MC (log scale) - {topology_name}')
+    ax2.set_ylabel('P(T_fail ≤ t) [log scale]')
+    ax2.set_yscale('log')
+    ax2.set_title(f'CDF MC - {topology_name}')
     ax2.legend()
-    ax2.grid(True, alpha=0.3)
+    ax2.grid(True, alpha=0.3, which='both')
 
     plt.tight_layout()
 
