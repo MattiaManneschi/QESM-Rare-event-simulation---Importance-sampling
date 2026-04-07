@@ -454,6 +454,7 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
                       t_max=500, t_step=10,
                       ce_iterations=5, ce_samples=2000,
                       smc_steps=10, ess_threshold=0.5, clip_percentile=95,
+                      dkw_confidence=0.95,
                       verbose=True):
     """
     Calcola la curva CDF usando DirectPredictor + Adaptive IS + SMC.
@@ -475,6 +476,7 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
         'alphas': {c: [] for c in comps},
         'betas': {c: [] for c in comps},
         'pointwise_lower': [], 'pointwise_upper': [],
+        'pointwise_is_lower': [], 'pointwise_is_upper': [],
         'dkw_lower': [], 'dkw_upper': [],
     }
 
@@ -507,14 +509,8 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
             sample_model.to(device)
             n_is, n_mc = get_predicted_samples(sample_model, pyg_data, T=float(t), T_max=float(t_max))
         else:
-            t_factor = max(1.0, 2.5 * (1.0 - t / t_max))
-            and_factor = 1.0 + n_and * 0.1
-            base_is = 30000
-            base_mc = 10000000
-            n_is = int(base_is * t_factor * and_factor)
-            n_mc = int(base_mc * t_factor * and_factor)
-            n_is = min(200000, max(20000, n_is))
-            n_mc = min(10000000, max(50000, n_mc))
+            n_is = 30000
+            n_mc = 10000000
 
         # Step 3: Cross-Entropy per ottimizzare α, β
         alpha_opt, beta_opt, ce_stats = adaptive_is_cross_entropy(
@@ -553,12 +549,20 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
 
         p_mc = cdf_point['p_mc']
         std_mc = cdf_point['std_mc']
+        p_is = cdf_point['p_is']
+        std_is = cdf_point['std_is']
+        
         pointwise_lower, pointwise_upper = _pointwise_confidence_interval(
             np.array([p_mc]), np.array([std_mc]), np.array([n_mc])
         )
-        dkw_eps = _dkw_confidence_band(np.array([n_mc]), confidence=0.95)
+        pointwise_is_lower, pointwise_is_upper = _pointwise_confidence_interval(
+            np.array([p_is]), np.array([std_is]), np.array([n_is])
+        )
+        dkw_eps = _dkw_confidence_band(np.array([n_mc]), confidence=dkw_confidence)
         results['pointwise_lower'].append(float(pointwise_lower[0]))
         results['pointwise_upper'].append(float(pointwise_upper[0]))
+        results['pointwise_is_lower'].append(float(pointwise_is_lower[0]))
+        results['pointwise_is_upper'].append(float(pointwise_is_upper[0]))
         results['dkw_lower'].append(float(np.clip(p_mc - dkw_eps[0], 0.0, 1.0)))
         results['dkw_upper'].append(float(np.clip(p_mc + dkw_eps[0], 0.0, 1.0)))
 
@@ -598,51 +602,71 @@ def compute_cdf_curve(ft, fault_tree_logic, direct_model, sample_model=None,
 # =============================================================================
 
 def plot_cdf(results, topology_name="FaultTree", save_path=None):
-    """Plotta la curva CDF - 2 subplot: IS e MC (scala lineare con DKW band)."""
+    """
+    Plot unico: CDF IS + MC, bande Pointwise Wilson per entrambi, DKW per MC (scala log).
+    
+    - Blu: IS con banda Pointwise Wilson (area leggera)
+    - Rosso: MC con banda Pointwise Wilson (area leggera)
+    - Arancio: Banda DKW su MC (linee sottili)
+    """
     t = np.array(results['t'])
     p_is = np.array(results['p_is'])
     p_mc = np.array(results['p_mc'])
     pointwise_lower = np.array(results.get('pointwise_lower', []))
     pointwise_upper = np.array(results.get('pointwise_upper', []))
+    pointwise_is_lower = np.array(results.get('pointwise_is_lower', []))
+    pointwise_is_upper = np.array(results.get('pointwise_is_upper', []))
     dkw_lower = np.array(results.get('dkw_lower', []))
     dkw_upper = np.array(results.get('dkw_upper', []))
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, ax = plt.subplots(1, 1, figsize=(12, 7))
 
-    ax1 = axes[0]
-    ax1.plot(t, p_is, 'b-', linewidth=2, label='IS')
-    ax1.set_xlabel('Tempo t')
-    ax1.set_ylabel('P(T_fail ≤ t)')
-    ax1.set_title(f'CDF IS - {topology_name}')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    # Transforma in log-safe
+    p_is_safe = np.clip(p_is, 1e-6, 1.0)
+    p_mc_safe = np.clip(p_mc, 1e-6, 1.0)
 
-    ax2 = axes[1]
-    if pointwise_lower.size == t.size and pointwise_upper.size == t.size:
-        pw_lower = np.clip(pointwise_lower, 0.0, 1.0)
-        pw_upper = np.clip(pointwise_upper, 0.0, 1.0)
-        ax2.plot(t, pw_lower, color='red', linewidth=1, linestyle='--', alpha=0.6,
-                 label='Pointwise 95% CI')
-        ax2.plot(t, pw_upper, color='red', linewidth=1, linestyle='--', alpha=0.6)
-    if dkw_lower.size == t.size and dkw_upper.size == t.size:
-        band_lower = np.clip(dkw_lower, 0.0, 1.0)
-        band_upper = np.clip(dkw_upper, 0.0, 1.0)
-        ax2.plot(t, band_lower, color='orange', linewidth=1, linestyle='--', alpha=0.6,
-                 label='DKW 95% band')
-        ax2.plot(t, band_upper, color='orange', linewidth=1, linestyle='--', alpha=0.6)
-    ax2.plot(t, p_mc, 'r-', linewidth=2, label='MC')
-    ax2.set_xlabel('Tempo t')
-    ax2.set_ylabel('P(T_fail ≤ t) [log scale]')
-    ax2.set_yscale('log')
-    ax2.set_title(f'CDF MC - {topology_name}')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3, which='both')
+    # === Banda DKW su MC (linee visibili) ===
+    if len(dkw_lower) == len(t) and len(dkw_upper) == len(t):
+        band_lower = np.clip(dkw_lower, 1e-6, 1.0)
+        band_upper = np.clip(dkw_upper, 1e-6, 1.0)
+        ax.plot(t, band_lower, color='orange', linewidth=1.5, linestyle='--', alpha=0.8,
+                label='DKW 95% band (MC)', zorder=1)
+        ax.plot(t, band_upper, color='orange', linewidth=1.5, linestyle='--', alpha=0.8, zorder=1)
+
+    # === Banda Pointwise Wilson su MC (fill) ===
+    if len(pointwise_lower) == len(t) and len(pointwise_upper) == len(t):
+        pw_lower = np.clip(pointwise_lower, 1e-6, 1.0)
+        pw_upper = np.clip(pointwise_upper, 1e-6, 1.0)
+        ax.fill_between(t, pw_lower, pw_upper, color='red', alpha=0.12, 
+                        label='Pointwise Wilson 95% (MC)', zorder=2)
+
+    # === CDF MC (linea rossa spessa) ===
+    ax.plot(t, p_mc_safe, 'r-', linewidth=2.5, label='MC', marker='s', 
+           markersize=5, alpha=0.85, zorder=4)
+
+    # === Banda Pointwise Wilson su IS (fill) ===
+    if len(pointwise_is_lower) == len(t) and len(pointwise_is_upper) == len(t):
+        pw_lower_is = np.clip(pointwise_is_lower, 1e-6, 1.0)
+        pw_upper_is = np.clip(pointwise_is_upper, 1e-6, 1.0)
+        ax.fill_between(t, pw_lower_is, pw_upper_is, color='blue', alpha=0.12, 
+                        label='Pointwise Wilson 95% (IS)', zorder=2)
+
+    # === CDF IS (linea blu spessa) ===
+    ax.plot(t, p_is_safe, 'b-', linewidth=2.5, label='IS', marker='o', 
+           markersize=5, alpha=0.85, zorder=3)
+
+    ax.set_xlabel('Tempo t', fontsize=12, fontweight='bold')
+    ax.set_ylabel('P(T_fail ≤ t)', fontsize=12, fontweight='bold')
+    ax.set_title(f'CDF: IS vs MC con Bande di Confidenza - {topology_name}', 
+                 fontsize=13, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=10, framealpha=0.95)
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=150)
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
         print(f"Salvato: {save_path}")
 
     plt.close(fig)
@@ -734,7 +758,7 @@ def plot_cv(results, topology_name="FaultTree", save_path=None):
 def run_cdf_analysis(ft, fault_tree_logic, direct_model, topology_name="FaultTree",
                      t_max=500, t_step=10, sample_model=None,
                      ce_iterations=5, ce_samples=3000,
-                     smc_steps=20, ess_threshold=0.5, clip_percentile=90):
+                     smc_steps=20, ess_threshold=0.5, clip_percentile=90, dkw_confidence=0.95):
     """
     Esegue l'analisi CDF completa con Adaptive IS + SMC + Weight Clipping.
 
@@ -768,7 +792,8 @@ def run_cdf_analysis(ft, fault_tree_logic, direct_model, topology_name="FaultTre
         ce_samples=ce_samples,
         smc_steps=smc_steps,
         ess_threshold=ess_threshold,
-        clip_percentile=clip_percentile
+        clip_percentile=clip_percentile,
+        dkw_confidence=dkw_confidence
     )
 
     cdf_path = os.path.join(RESULTS_DIR, 'CDF', f'cdf_{topology_name}_{timestamp}.png')

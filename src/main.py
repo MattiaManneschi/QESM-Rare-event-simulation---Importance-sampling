@@ -56,13 +56,9 @@ if __name__ == "__main__":
             sample_model = None
 
 
-    target_order = -5
+    target_order = -2
 
-    ft_data = generate_rare_event_fault_tree((20, 30), target_p_order=target_order)    
-    # Fallback se la generazione fallisce
-    if ft_data is None:
-        print(f"[FALLBACK] Generazione con target_order={target_order} fallita. Riprovo con target_order=-6...")
-        ft_data = generate_rare_event_fault_tree((30, 45), target_p_order=-6)
+    ft_data = generate_rare_event_fault_tree((10, 20), target_p_order=target_order) 
     
     if ft_data is None:
         print("[ERROR] Generazione del fault tree completamente fallita. Uscita.")
@@ -75,10 +71,10 @@ if __name__ == "__main__":
         ft_data['fault_tree'],
         direct_model,
         topology_name=ft_data['structure'],
-        t_max=10,
-        t_step=5,
+        t_max=100,
+        t_step=2,
         sample_model=sample_model,
-        ce_iterations=1,
+        ce_iterations=0,
         ce_samples=1000,
         smc_steps=10
     )

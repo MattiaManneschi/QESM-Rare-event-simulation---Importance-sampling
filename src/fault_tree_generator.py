@@ -33,7 +33,7 @@ def generate_rare_event_fault_tree(
         Frazione massima di porte AND su (AND+OR).  Default 0.4 (40 %).
         Evita alberi troppo AND-heavy che causano alta varianza IS.
     """
-    max_retries = 50
+    max_retries = 100
     best_ft = None
     min_error = float('inf')
 
